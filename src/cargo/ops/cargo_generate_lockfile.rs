@@ -4,7 +4,7 @@ use log::debug;
 use termcolor::Color::{self, Cyan, Green, Red};
 
 use crate::core::registry::PackageRegistry;
-use crate::core::resolver::ResolveOpts;
+use crate::core::resolver::features::{CliFeatures, HasDevUnits};
 use crate::core::{PackageId, PackageIdSpec};
 use crate::core::{Resolve, SourceId, Workspace};
 use crate::ops;
@@ -17,6 +17,7 @@ pub struct UpdateOptions<'a> {
     pub precise: Option<&'a str>,
     pub aggressive: bool,
     pub dry_run: bool,
+    pub workspace: bool,
 }
 
 pub fn generate_lockfile(ws: &Workspace<'_>) -> CargoResult<()> {
@@ -24,7 +25,8 @@ pub fn generate_lockfile(ws: &Workspace<'_>) -> CargoResult<()> {
     let mut resolve = ops::resolve_with_previous(
         &mut registry,
         ws,
-        &ResolveOpts::everything(),
+        &CliFeatures::new_all(true),
+        HasDevUnits::Yes,
         None,
         None,
         &[],
@@ -41,10 +43,6 @@ pub fn update_lockfile(ws: &Workspace<'_>, opts: &UpdateOptions<'_>) -> CargoRes
 
     if ws.members().count() == 0 {
         anyhow::bail!("you can't generate a lockfile for an empty workspace.")
-    }
-
-    if opts.config.offline() {
-        anyhow::bail!("you can't update in the offline mode");
     }
 
     // Updates often require a lot of modifications to the registry, so ensure
@@ -64,7 +62,8 @@ pub fn update_lockfile(ws: &Workspace<'_>, opts: &UpdateOptions<'_>) -> CargoRes
                     ops::resolve_with_previous(
                         &mut registry,
                         ws,
-                        &ResolveOpts::everything(),
+                        &CliFeatures::new_all(true),
+                        HasDevUnits::Yes,
                         None,
                         None,
                         &[],
@@ -78,8 +77,10 @@ pub fn update_lockfile(ws: &Workspace<'_>, opts: &UpdateOptions<'_>) -> CargoRes
     let mut to_avoid = HashSet::new();
 
     if opts.to_update.is_empty() {
-        to_avoid.extend(previous_resolve.iter());
-        to_avoid.extend(previous_resolve.unused_patches());
+        if !opts.workspace {
+            to_avoid.extend(previous_resolve.iter());
+            to_avoid.extend(previous_resolve.unused_patches());
+        }
     } else {
         let mut sources = Vec::new();
         for name in opts.to_update.iter() {
@@ -116,7 +117,8 @@ pub fn update_lockfile(ws: &Workspace<'_>, opts: &UpdateOptions<'_>) -> CargoRes
     let mut resolve = ops::resolve_with_previous(
         &mut registry,
         ws,
-        &ResolveOpts::everything(),
+        &CliFeatures::new_all(true),
+        HasDevUnits::Yes,
         Some(&previous_resolve),
         Some(&to_avoid),
         &[],

@@ -5,6 +5,7 @@ use std::fmt::{self, Write};
 use cargo_test_support::install::exe;
 use cargo_test_support::paths::CargoPathExt;
 use cargo_test_support::registry::Package;
+use cargo_test_support::tools;
 use cargo_test_support::{basic_manifest, project};
 
 #[cargo_test]
@@ -415,6 +416,60 @@ fn check_all() {
 }
 
 #[cargo_test]
+fn check_all_exclude() {
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [workspace]
+                members = ["bar", "baz"]
+            "#,
+        )
+        .file("bar/Cargo.toml", &basic_manifest("bar", "0.1.0"))
+        .file("bar/src/lib.rs", "pub fn bar() {}")
+        .file("baz/Cargo.toml", &basic_manifest("baz", "0.1.0"))
+        .file("baz/src/lib.rs", "pub fn baz() { break_the_build(); }")
+        .build();
+
+    p.cargo("check --workspace --exclude baz")
+        .with_stderr_does_not_contain("[CHECKING] baz v0.1.0 [..]")
+        .with_stderr(
+            "\
+[CHECKING] bar v0.1.0 ([..])
+[FINISHED] dev [unoptimized + debuginfo] target(s) in [..]
+",
+        )
+        .run();
+}
+
+#[cargo_test]
+fn check_all_exclude_glob() {
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [workspace]
+                members = ["bar", "baz"]
+            "#,
+        )
+        .file("bar/Cargo.toml", &basic_manifest("bar", "0.1.0"))
+        .file("bar/src/lib.rs", "pub fn bar() {}")
+        .file("baz/Cargo.toml", &basic_manifest("baz", "0.1.0"))
+        .file("baz/src/lib.rs", "pub fn baz() { break_the_build(); }")
+        .build();
+
+    p.cargo("check --workspace --exclude '*z'")
+        .with_stderr_does_not_contain("[CHECKING] baz v0.1.0 [..]")
+        .with_stderr(
+            "\
+[CHECKING] bar v0.1.0 ([..])
+[FINISHED] dev [unoptimized + debuginfo] target(s) in [..]
+",
+        )
+        .run();
+}
+
+#[cargo_test]
 fn check_virtual_all_implied() {
     let p = project()
         .file(
@@ -437,13 +492,67 @@ fn check_virtual_all_implied() {
 }
 
 #[cargo_test]
+fn check_virtual_manifest_one_project() {
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [workspace]
+                members = ["bar", "baz"]
+            "#,
+        )
+        .file("bar/Cargo.toml", &basic_manifest("bar", "0.1.0"))
+        .file("bar/src/lib.rs", "pub fn bar() {}")
+        .file("baz/Cargo.toml", &basic_manifest("baz", "0.1.0"))
+        .file("baz/src/lib.rs", "pub fn baz() { break_the_build(); }")
+        .build();
+
+    p.cargo("check -p bar")
+        .with_stderr_does_not_contain("[CHECKING] baz v0.1.0 [..]")
+        .with_stderr(
+            "\
+[CHECKING] bar v0.1.0 ([..])
+[FINISHED] dev [unoptimized + debuginfo] target(s) in [..]
+",
+        )
+        .run();
+}
+
+#[cargo_test]
+fn check_virtual_manifest_glob() {
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [workspace]
+                members = ["bar", "baz"]
+            "#,
+        )
+        .file("bar/Cargo.toml", &basic_manifest("bar", "0.1.0"))
+        .file("bar/src/lib.rs", "pub fn bar() {  break_the_build(); }")
+        .file("baz/Cargo.toml", &basic_manifest("baz", "0.1.0"))
+        .file("baz/src/lib.rs", "pub fn baz() {}")
+        .build();
+
+    p.cargo("check -p '*z'")
+        .with_stderr_does_not_contain("[CHECKING] bar v0.1.0 [..]")
+        .with_stderr(
+            "\
+[CHECKING] baz v0.1.0 ([..])
+[FINISHED] dev [unoptimized + debuginfo] target(s) in [..]
+",
+        )
+        .run();
+}
+
+#[cargo_test]
 fn exclude_warns_on_non_existing_package() {
     let p = project().file("src/lib.rs", "").build();
     p.cargo("check --workspace --exclude bar")
         .with_stdout("")
         .with_stderr(
             "\
-[WARNING] excluded package(s) bar not found in workspace `[CWD]`
+[WARNING] excluded package(s) `bar` not found in workspace `[CWD]`
 [CHECKING] foo v0.0.1 ([CWD])
 [FINISHED] dev [unoptimized + debuginfo] target(s) in [..]
 ",
@@ -694,8 +803,7 @@ fn short_message_format() {
         .with_stderr_contains(
             "\
 src/lib.rs:1:27: error[E0308]: mismatched types
-error: aborting due to previous error
-error: could not compile `foo`
+error: could not compile `foo` due to previous error
 ",
         )
         .run();
@@ -753,10 +861,7 @@ fn does_not_use_empty_rustc_wrapper() {
 #[cargo_test]
 fn does_not_use_empty_rustc_workspace_wrapper() {
     let p = project().file("src/lib.rs", "").build();
-    p.cargo("check -Zunstable-options")
-        .masquerade_as_nightly_cargo()
-        .env("RUSTC_WORKSPACE_WRAPPER", "")
-        .run();
+    p.cargo("check").env("RUSTC_WORKSPACE_WRAPPER", "").run();
 }
 
 #[cargo_test]
@@ -782,7 +887,6 @@ fn error_from_deep_recursion() -> Result<(), fmt::Error> {
 
 #[cargo_test]
 fn rustc_workspace_wrapper_affects_all_workspace_members() {
-    use cargo_test_support::paths;
     let p = project()
         .file(
             "Cargo.toml",
@@ -797,9 +901,8 @@ fn rustc_workspace_wrapper_affects_all_workspace_members() {
         .file("baz/src/lib.rs", "pub fn baz() {}")
         .build();
 
-    p.cargo("check -Zunstable-options")
-        .env("RUSTC_WORKSPACE_WRAPPER", paths::echo_wrapper())
-        .masquerade_as_nightly_cargo()
+    p.cargo("check")
+        .env("RUSTC_WORKSPACE_WRAPPER", tools::echo_wrapper())
         .with_stderr_contains("WRAPPER CALLED: rustc --crate-name bar [..]")
         .with_stderr_contains("WRAPPER CALLED: rustc --crate-name baz [..]")
         .run();
@@ -807,7 +910,6 @@ fn rustc_workspace_wrapper_affects_all_workspace_members() {
 
 #[cargo_test]
 fn rustc_workspace_wrapper_includes_path_deps() {
-    use cargo_test_support::paths;
     let p = project()
         .file(
             "Cargo.toml",
@@ -831,9 +933,8 @@ fn rustc_workspace_wrapper_includes_path_deps() {
         .file("baz/src/lib.rs", "pub fn baz() {}")
         .build();
 
-    p.cargo("check --workspace -Zunstable-options")
-        .env("RUSTC_WORKSPACE_WRAPPER", paths::echo_wrapper())
-        .masquerade_as_nightly_cargo()
+    p.cargo("check --workspace")
+        .env("RUSTC_WORKSPACE_WRAPPER", tools::echo_wrapper())
         .with_stderr_contains("WRAPPER CALLED: rustc --crate-name foo [..]")
         .with_stderr_contains("WRAPPER CALLED: rustc --crate-name bar [..]")
         .with_stderr_contains("WRAPPER CALLED: rustc --crate-name baz [..]")
@@ -842,7 +943,6 @@ fn rustc_workspace_wrapper_includes_path_deps() {
 
 #[cargo_test]
 fn rustc_workspace_wrapper_respects_primary_units() {
-    use cargo_test_support::paths;
     let p = project()
         .file(
             "Cargo.toml",
@@ -857,9 +957,8 @@ fn rustc_workspace_wrapper_respects_primary_units() {
         .file("baz/src/lib.rs", "pub fn baz() {}")
         .build();
 
-    p.cargo("check -p bar -Zunstable-options")
-        .env("RUSTC_WORKSPACE_WRAPPER", paths::echo_wrapper())
-        .masquerade_as_nightly_cargo()
+    p.cargo("check -p bar")
+        .env("RUSTC_WORKSPACE_WRAPPER", tools::echo_wrapper())
         .with_stderr_contains("WRAPPER CALLED: rustc --crate-name bar [..]")
         .with_stdout_does_not_contain("WRAPPER CALLED: rustc --crate-name baz [..]")
         .run();
@@ -867,7 +966,6 @@ fn rustc_workspace_wrapper_respects_primary_units() {
 
 #[cargo_test]
 fn rustc_workspace_wrapper_excludes_published_deps() {
-    use cargo_test_support::paths;
     let p = project()
         .file(
             "Cargo.toml",
@@ -891,9 +989,8 @@ fn rustc_workspace_wrapper_excludes_published_deps() {
 
     Package::new("baz", "1.0.0").publish();
 
-    p.cargo("check --workspace -v -Zunstable-options")
-        .env("RUSTC_WORKSPACE_WRAPPER", paths::echo_wrapper())
-        .masquerade_as_nightly_cargo()
+    p.cargo("check --workspace -v")
+        .env("RUSTC_WORKSPACE_WRAPPER", tools::echo_wrapper())
         .with_stderr_contains("WRAPPER CALLED: rustc --crate-name foo [..]")
         .with_stderr_contains("WRAPPER CALLED: rustc --crate-name bar [..]")
         .with_stderr_contains("[CHECKING] baz [..]")

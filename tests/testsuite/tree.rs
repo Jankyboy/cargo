@@ -1,5 +1,6 @@
 //! Tests for the `cargo tree` command.
 
+use super::features2::switch_to_resolver_2;
 use cargo_test_support::cross_compile::{self, alternate};
 use cargo_test_support::registry::{Dependency, Package};
 use cargo_test_support::{basic_manifest, git, project, rustc_host, Project};
@@ -78,16 +79,16 @@ fn virtual_workspace() {
             "Cargo.toml",
             r#"
             [workspace]
-            members = ["a", "b", "c"]
+            members = ["a", "baz", "c"]
             "#,
         )
         .file("a/Cargo.toml", &basic_manifest("a", "1.0.0"))
         .file("a/src/lib.rs", "")
         .file(
-            "b/Cargo.toml",
+            "baz/Cargo.toml",
             r#"
             [package]
-            name = "b"
+            name = "baz"
             version = "0.1.0"
 
             [dependencies]
@@ -95,7 +96,7 @@ fn virtual_workspace() {
             somedep = "1.0"
             "#,
         )
-        .file("b/src/lib.rs", "")
+        .file("baz/src/lib.rs", "")
         .file("c/Cargo.toml", &basic_manifest("c", "1.0.0"))
         .file("c/src/lib.rs", "")
         .build();
@@ -105,7 +106,7 @@ fn virtual_workspace() {
             "\
 a v1.0.0 ([..]/foo/a)
 
-b v0.1.0 ([..]/foo/b)
+baz v0.1.0 ([..]/foo/baz)
 ├── c v1.0.0 ([..]/foo/c)
 └── somedep v1.0.0
 
@@ -117,10 +118,43 @@ c v1.0.0 ([..]/foo/c)
     p.cargo("tree -p a").with_stdout("a v1.0.0 [..]").run();
 
     p.cargo("tree")
-        .cwd("b")
+        .cwd("baz")
         .with_stdout(
             "\
-b v0.1.0 ([..]/foo/b)
+baz v0.1.0 ([..]/foo/baz)
+├── c v1.0.0 ([..]/foo/c)
+└── somedep v1.0.0
+",
+        )
+        .run();
+
+    // exclude baz
+    p.cargo("tree --workspace --exclude baz")
+        .with_stdout(
+            "\
+a v1.0.0 ([..]/foo/a)
+
+c v1.0.0 ([..]/foo/c)
+",
+        )
+        .run();
+
+    // exclude glob '*z'
+    p.cargo("tree --workspace --exclude '*z'")
+        .with_stdout(
+            "\
+a v1.0.0 ([..]/foo/a)
+
+c v1.0.0 ([..]/foo/c)
+",
+        )
+        .run();
+
+    // include glob '*z'
+    p.cargo("tree -p '*z'")
+        .with_stdout(
+            "\
+baz v0.1.0 ([..]/foo/baz)
 ├── c v1.0.0 ([..]/foo/c)
 └── somedep v1.0.0
 ",
@@ -333,7 +367,7 @@ fn filters_target() {
     Package::new("build_target_dep", "1.0.0").publish();
     Package::new("build_host_dep", "1.0.0")
         .target_dep("targetdep", "1.0", alternate())
-        .target_dep("hostdep", "1.0", &rustc_host())
+        .target_dep("hostdep", "1.0", rustc_host())
         .publish();
     Package::new("pm_target", "1.0.0")
         .proc_macro(true)
@@ -379,7 +413,7 @@ fn filters_target() {
             "\
 foo v0.1.0 ([..]/foo)
 ├── hostdep v1.0.0
-└── pm_host v1.0.0
+└── pm_host v1.0.0 (proc-macro)
 [build-dependencies]
 └── build_host_dep v1.0.0
     └── hostdep v1.0.0
@@ -392,7 +426,7 @@ foo v0.1.0 ([..]/foo)
         .with_stdout(
             "\
 foo v0.1.0 ([..]/foo)
-├── pm_target v1.0.0
+├── pm_target v1.0.0 (proc-macro)
 └── targetdep v1.0.0
 [build-dependencies]
 └── build_host_dep v1.0.0
@@ -409,7 +443,7 @@ foo v0.1.0 ([..]/foo)
             "\
 foo v0.1.0 ([..]/foo)
 ├── hostdep v1.0.0
-└── pm_host v1.0.0
+└── pm_host v1.0.0 (proc-macro)
 [build-dependencies]
 └── build_host_dep v1.0.0
     └── hostdep v1.0.0
@@ -422,8 +456,26 @@ foo v0.1.0 ([..]/foo)
             "\
 foo v0.1.0 ([..]/foo)
 ├── hostdep v1.0.0
-├── pm_host v1.0.0
-├── pm_target v1.0.0
+├── pm_host v1.0.0 (proc-macro)
+├── pm_target v1.0.0 (proc-macro)
+└── targetdep v1.0.0
+[build-dependencies]
+├── build_host_dep v1.0.0
+│   ├── hostdep v1.0.0
+│   └── targetdep v1.0.0
+└── build_target_dep v1.0.0
+[dev-dependencies]
+└── devdep v1.0.0
+",
+        )
+        .run();
+
+    // no-proc-macro
+    p.cargo("tree --target=all -e no-proc-macro")
+        .with_stdout(
+            "\
+foo v0.1.0 ([..]/foo)
+├── hostdep v1.0.0
 └── targetdep v1.0.0
 [build-dependencies]
 ├── build_host_dep v1.0.0
@@ -442,6 +494,10 @@ fn dep_kinds() {
     Package::new("inner-devdep", "1.0.0").publish();
     Package::new("inner-builddep", "1.0.0").publish();
     Package::new("inner-normal", "1.0.0").publish();
+    Package::new("inner-pm", "1.0.0").proc_macro(true).publish();
+    Package::new("inner-buildpm", "1.0.0")
+        .proc_macro(true)
+        .publish();
     Package::new("normaldep", "1.0.0")
         .dep("inner-normal", "1.0")
         .dev_dep("inner-devdep", "1.0")
@@ -449,8 +505,10 @@ fn dep_kinds() {
         .publish();
     Package::new("devdep", "1.0.0")
         .dep("inner-normal", "1.0")
+        .dep("inner-pm", "1.0")
         .dev_dep("inner-devdep", "1.0")
         .build_dep("inner-builddep", "1.0")
+        .build_dep("inner-buildpm", "1.0")
         .publish();
     Package::new("builddep", "1.0.0")
         .dep("inner-normal", "1.0")
@@ -493,9 +551,11 @@ foo v0.1.0 ([..]/foo)
     └── inner-builddep v1.0.0
 [dev-dependencies]
 └── devdep v1.0.0
-    └── inner-normal v1.0.0
+    ├── inner-normal v1.0.0
+    └── inner-pm v1.0.0 (proc-macro)
     [build-dependencies]
-    └── inner-builddep v1.0.0
+    ├── inner-builddep v1.0.0
+    └── inner-buildpm v1.0.0 (proc-macro)
 ",
         )
         .run();
@@ -528,6 +588,23 @@ foo v0.1.0 ([..]/foo)
         .run();
 
     p.cargo("tree -e dev,build")
+        .with_stdout(
+            "\
+foo v0.1.0 ([..]/foo)
+[build-dependencies]
+└── builddep v1.0.0
+    [build-dependencies]
+    └── inner-builddep v1.0.0
+[dev-dependencies]
+└── devdep v1.0.0
+    [build-dependencies]
+    ├── inner-builddep v1.0.0
+    └── inner-buildpm v1.0.0 (proc-macro)
+",
+        )
+        .run();
+
+    p.cargo("tree -e dev,build,no-proc-macro")
         .with_stdout(
             "\
 foo v0.1.0 ([..]/foo)
@@ -932,6 +1009,23 @@ foo v0.1.0 ([..]/foo)
 #[cargo_test]
 fn format() {
     Package::new("dep", "1.0.0").publish();
+    Package::new("other-dep", "1.0.0").publish();
+
+    Package::new("dep_that_is_awesome", "1.0.0")
+        .file(
+            "Cargo.toml",
+            r#"
+                [package]
+                name = "dep_that_is_awesome"
+                version = "1.0.0"
+
+                [lib]
+                name = "awesome_dep"
+            "#,
+        )
+        .file("src/lib.rs", "pub struct Straw;")
+        .publish();
+
     let p = project()
         .file(
             "Cargo.toml",
@@ -944,6 +1038,9 @@ fn format() {
 
             [dependencies]
             dep = {version="1.0", optional=true}
+            other-dep = {version="1.0", optional=true}
+            dep_that_is_awesome = {version="1.0", optional=true}
+
 
             [features]
             default = ["foo"]
@@ -951,7 +1048,7 @@ fn format() {
             bar = []
             "#,
         )
-        .file("src/lib.rs", "")
+        .file("src/main.rs", "")
         .build();
 
     p.cargo("tree --format <<<{p}>>>")
@@ -988,8 +1085,21 @@ Caused by:
         .arg("{p} [{f}]")
         .with_stdout(
             "\
-foo v0.1.0 ([..]/foo) [bar,default,dep,foo]
-└── dep v1.0.0 []
+foo v0.1.0 ([..]/foo) [bar,default,dep,dep_that_is_awesome,foo,other-dep]
+├── dep v1.0.0 []
+├── dep_that_is_awesome v1.0.0 []
+└── other-dep v1.0.0 []
+",
+        )
+        .run();
+
+    p.cargo("tree")
+        .arg("--features=other-dep,dep_that_is_awesome")
+        .arg("--format={lib}")
+        .with_stdout(
+            "
+├── awesome_dep
+└── other_dep
 ",
         )
         .run();
@@ -997,7 +1107,7 @@ foo v0.1.0 ([..]/foo) [bar,default,dep,foo]
 
 #[cargo_test]
 fn dev_dep_feature() {
-    // -Zfeatures=dev_dep with optional dep
+    // New feature resolver with optional dep
     Package::new("optdep", "1.0.0").publish();
     Package::new("bar", "1.0.0")
         .add_dep(Dependency::new("optdep", "1.0").optional(true))
@@ -1020,6 +1130,7 @@ fn dev_dep_feature() {
         .file("src/lib.rs", "")
         .build();
 
+    // Old behavior.
     p.cargo("tree")
         .with_stdout(
             "\
@@ -1042,8 +1153,10 @@ foo v0.1.0 ([..]/foo)
         )
         .run();
 
-    p.cargo("tree -Zfeatures=dev_dep")
-        .masquerade_as_nightly_cargo()
+    // New behavior.
+    switch_to_resolver_2(&p);
+
+    p.cargo("tree")
         .with_stdout(
             "\
 foo v0.1.0 ([..]/foo)
@@ -1055,8 +1168,7 @@ foo v0.1.0 ([..]/foo)
         )
         .run();
 
-    p.cargo("tree -e normal -Zfeatures=dev_dep")
-        .masquerade_as_nightly_cargo()
+    p.cargo("tree -e normal")
         .with_stdout(
             "\
 foo v0.1.0 ([..]/foo)
@@ -1068,7 +1180,7 @@ foo v0.1.0 ([..]/foo)
 
 #[cargo_test]
 fn host_dep_feature() {
-    // -Zfeatures=host_dep with optional dep
+    // New feature resolver with optional build dep
     Package::new("optdep", "1.0.0").publish();
     Package::new("bar", "1.0.0")
         .add_dep(Dependency::new("optdep", "1.0").optional(true))
@@ -1092,6 +1204,7 @@ fn host_dep_feature() {
         .file("build.rs", "fn main() {}")
         .build();
 
+    // Old behavior
     p.cargo("tree")
         .with_stdout(
             "\
@@ -1104,35 +1217,10 @@ foo v0.1.0 ([..]/foo)
         )
         .run();
 
-    p.cargo("tree -Zfeatures=host_dep")
-        .masquerade_as_nightly_cargo()
-        .with_stdout(
-            "\
-foo v0.1.0 ([..]/foo)
-└── bar v1.0.0
-[build-dependencies]
-└── bar v1.0.0
-    └── optdep v1.0.0
-",
-        )
-        .run();
-
     // -p
     p.cargo("tree -p bar")
         .with_stdout(
             "\
-bar v1.0.0
-└── optdep v1.0.0
-",
-        )
-        .run();
-
-    p.cargo("tree -p bar -Zfeatures=host_dep")
-        .masquerade_as_nightly_cargo()
-        .with_stdout(
-            "\
-bar v1.0.0
-
 bar v1.0.0
 └── optdep v1.0.0
 ",
@@ -1152,8 +1240,33 @@ optdep v1.0.0
         )
         .run();
 
-    p.cargo("tree -i optdep -Zfeatures=host_dep")
-        .masquerade_as_nightly_cargo()
+    // New behavior.
+    switch_to_resolver_2(&p);
+
+    p.cargo("tree")
+        .with_stdout(
+            "\
+foo v0.1.0 ([..]/foo)
+└── bar v1.0.0
+[build-dependencies]
+└── bar v1.0.0
+    └── optdep v1.0.0
+",
+        )
+        .run();
+
+    p.cargo("tree -p bar")
+        .with_stdout(
+            "\
+bar v1.0.0
+
+bar v1.0.0
+└── optdep v1.0.0
+",
+        )
+        .run();
+
+    p.cargo("tree -i optdep")
         .with_stdout(
             "\
 optdep v1.0.0
@@ -1165,8 +1278,7 @@ optdep v1.0.0
         .run();
 
     // Check that -d handles duplicates with features.
-    p.cargo("tree -d -Zfeatures=host_dep")
-        .masquerade_as_nightly_cargo()
+    p.cargo("tree -d")
         .with_stdout(
             "\
 bar v1.0.0
@@ -1182,7 +1294,7 @@ bar v1.0.0
 
 #[cargo_test]
 fn proc_macro_features() {
-    // -Zfeatures=host_dep with a proc-macro
+    // New feature resolver with a proc-macro
     Package::new("optdep", "1.0.0").publish();
     Package::new("somedep", "1.0.0")
         .add_dep(Dependency::new("optdep", "1.0").optional(true))
@@ -1207,11 +1319,12 @@ fn proc_macro_features() {
         .file("src/lib.rs", "")
         .build();
 
+    // Old behavior
     p.cargo("tree")
         .with_stdout(
             "\
 foo v0.1.0 ([..]/foo)
-├── pm v1.0.0
+├── pm v1.0.0 (proc-macro)
 │   └── somedep v1.0.0
 │       └── optdep v1.0.0
 └── somedep v1.0.0 (*)
@@ -1219,16 +1332,13 @@ foo v0.1.0 ([..]/foo)
         )
         .run();
 
-    // Note the missing (*)
-    p.cargo("tree -Zfeatures=host_dep")
-        .masquerade_as_nightly_cargo()
+    // Old behavior + no-proc-macro
+    p.cargo("tree -e no-proc-macro")
         .with_stdout(
             "\
 foo v0.1.0 ([..]/foo)
-├── pm v1.0.0
-│   └── somedep v1.0.0
-│       └── optdep v1.0.0
 └── somedep v1.0.0
+    └── optdep v1.0.0
 ",
         )
         .run();
@@ -1243,12 +1353,10 @@ somedep v1.0.0
         )
         .run();
 
-    p.cargo("tree -p somedep -Zfeatures=host_dep")
-        .masquerade_as_nightly_cargo()
+    // -p -e no-proc-macro
+    p.cargo("tree -p somedep -e no-proc-macro")
         .with_stdout(
             "\
-somedep v1.0.0
-
 somedep v1.0.0
 └── optdep v1.0.0
 ",
@@ -1261,22 +1369,78 @@ somedep v1.0.0
             "\
 somedep v1.0.0
 ├── foo v0.1.0 ([..]/foo)
-└── pm v1.0.0
+└── pm v1.0.0 (proc-macro)
     └── foo v0.1.0 ([..]/foo)
 ",
         )
         .run();
 
-    p.cargo("tree -i somedep -Zfeatures=host_dep")
-        .masquerade_as_nightly_cargo()
+    // invert + no-proc-macro
+    p.cargo("tree -i somedep -e no-proc-macro")
+        .with_stdout(
+            "\
+somedep v1.0.0
+└── foo v0.1.0 ([..]/foo)
+",
+        )
+        .run();
+
+    // New behavior.
+    switch_to_resolver_2(&p);
+
+    // Note the missing (*)
+    p.cargo("tree")
+        .with_stdout(
+            "\
+foo v0.1.0 ([..]/foo)
+├── pm v1.0.0 (proc-macro)
+│   └── somedep v1.0.0
+│       └── optdep v1.0.0
+└── somedep v1.0.0
+",
+        )
+        .run();
+
+    p.cargo("tree -e no-proc-macro")
+        .with_stdout(
+            "\
+foo v0.1.0 ([..]/foo)
+└── somedep v1.0.0
+",
+        )
+        .run();
+
+    p.cargo("tree -p somedep")
+        .with_stdout(
+            "\
+somedep v1.0.0
+
+somedep v1.0.0
+└── optdep v1.0.0
+",
+        )
+        .run();
+
+    p.cargo("tree -i somedep")
         .with_stdout(
             "\
 somedep v1.0.0
 └── foo v0.1.0 ([..]/foo)
 
 somedep v1.0.0
-└── pm v1.0.0
+└── pm v1.0.0 (proc-macro)
     └── foo v0.1.0 ([..]/foo)
+",
+        )
+        .run();
+
+    p.cargo("tree -i somedep -e no-proc-macro")
+        .with_stdout(
+            "\
+somedep v1.0.0
+└── foo v0.1.0 ([..]/foo)
+
+somedep v1.0.0
 ",
         )
         .run();
@@ -1284,7 +1448,7 @@ somedep v1.0.0
 
 #[cargo_test]
 fn itarget_opt_dep() {
-    // -Zfeatures=itarget with optional dep
+    // New feature resolver with optional target dep
     Package::new("optdep", "1.0.0").publish();
     Package::new("common", "1.0.0")
         .add_dep(Dependency::new("optdep", "1.0").optional(true))
@@ -1309,6 +1473,7 @@ fn itarget_opt_dep() {
         .file("src/lib.rs", "")
         .build();
 
+    // Old behavior
     p.cargo("tree")
         .with_stdout(
             "\
@@ -1319,14 +1484,16 @@ foo v1.0.0 ([..]/foo)
         )
         .run();
 
-    p.cargo("tree -Zfeatures=itarget")
+    // New behavior.
+    switch_to_resolver_2(&p);
+
+    p.cargo("tree")
         .with_stdout(
             "\
 foo v1.0.0 ([..]/foo)
 └── common v1.0.0
 ",
         )
-        .masquerade_as_nightly_cargo()
         .run();
 }
 
@@ -1437,5 +1604,230 @@ b v0.1.0 ([..]/foo/b)
 └── somedep v1.0.0
 ",
         )
+        .run();
+}
+
+#[cargo_test]
+fn unknown_edge_kind() {
+    let p = project()
+        .file("Cargo.toml", "")
+        .file("src/lib.rs", "")
+        .build();
+
+    p.cargo("tree -e unknown")
+        .with_stderr(
+            "\
+[ERROR] unknown edge kind `unknown`, valid values are \
+\"normal\", \"build\", \"dev\", \
+\"no-normal\", \"no-build\", \"no-dev\", \"no-proc-macro\", \
+\"features\", or \"all\"
+",
+        )
+        .with_status(101)
+        .run();
+}
+
+#[cargo_test]
+fn mixed_no_edge_kinds() {
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+            [package]
+            name = "foo"
+            version = "0.1.0"
+            "#,
+        )
+        .file("src/lib.rs", "")
+        .build();
+
+    p.cargo("tree -e no-build,normal")
+        .with_stderr(
+            "\
+[ERROR] `normal` dependency kind cannot be mixed with \
+\"no-normal\", \"no-build\", or \"no-dev\" dependency kinds
+",
+        )
+        .with_status(101)
+        .run();
+
+    // `no-proc-macro` can be mixed with others
+    p.cargo("tree -e no-proc-macro,normal")
+        .with_stdout(
+            "\
+foo v0.1.0 ([..]/foo)
+",
+        )
+        .run();
+}
+
+#[cargo_test]
+fn depth_limit() {
+    let p = make_simple_proj();
+
+    p.cargo("tree --depth 0")
+        .with_stdout(
+            "\
+foo v0.1.0 ([..]/foo)
+[build-dependencies]
+[dev-dependencies]
+",
+        )
+        .run();
+
+    p.cargo("tree --depth 1")
+        .with_stdout(
+            "\
+foo v0.1.0 ([..]/foo)
+├── a v1.0.0
+└── c v1.0.0
+[build-dependencies]
+└── bdep v1.0.0
+[dev-dependencies]
+└── devdep v1.0.0
+",
+        )
+        .run();
+
+    p.cargo("tree --depth 2")
+        .with_stdout(
+            "\
+foo v0.1.0 ([..]/foo)
+├── a v1.0.0
+│   └── b v1.0.0
+└── c v1.0.0
+[build-dependencies]
+└── bdep v1.0.0
+    └── b v1.0.0 (*)
+[dev-dependencies]
+└── devdep v1.0.0
+    └── b v1.0.0 (*)
+",
+        )
+        .run();
+
+    // specify a package
+    p.cargo("tree -p bdep --depth 1")
+        .with_stdout(
+            "\
+bdep v1.0.0
+└── b v1.0.0
+",
+        )
+        .run();
+
+    // different prefix
+    p.cargo("tree --depth 1 --prefix depth")
+        .with_stdout(
+            "\
+0foo v0.1.0 ([..]/foo)
+1a v1.0.0
+1c v1.0.0
+1bdep v1.0.0
+1devdep v1.0.0
+",
+        )
+        .run();
+
+    // with edge-kinds
+    p.cargo("tree --depth 1 -e no-dev")
+        .with_stdout(
+            "\
+foo v0.1.0 ([..]/foo)
+├── a v1.0.0
+└── c v1.0.0
+[build-dependencies]
+└── bdep v1.0.0
+",
+        )
+        .run();
+
+    // invert
+    p.cargo("tree --depth 1 --invert c")
+        .with_stdout(
+            "\
+c v1.0.0
+├── b v1.0.0
+└── foo v0.1.0 ([..]/foo)
+",
+        )
+        .run();
+}
+
+#[cargo_test]
+fn prune() {
+    let p = make_simple_proj();
+
+    p.cargo("tree --prune c")
+        .with_stdout(
+            "\
+foo v0.1.0 ([..]/foo)
+└── a v1.0.0
+    └── b v1.0.0
+[build-dependencies]
+└── bdep v1.0.0
+    └── b v1.0.0 (*)
+[dev-dependencies]
+└── devdep v1.0.0
+    └── b v1.0.0 (*)
+",
+        )
+        .run();
+
+    // multiple prune
+    p.cargo("tree --prune c --prune bdep")
+        .with_stdout(
+            "\
+foo v0.1.0 ([..]/foo)
+└── a v1.0.0
+    └── b v1.0.0
+[build-dependencies]
+[dev-dependencies]
+└── devdep v1.0.0
+    └── b v1.0.0 (*)
+",
+        )
+        .run();
+
+    // with edge-kinds
+    p.cargo("tree --prune c -e normal")
+        .with_stdout(
+            "\
+foo v0.1.0 ([..]/foo)
+└── a v1.0.0
+    └── b v1.0.0
+",
+        )
+        .run();
+
+    // pruning self does not works
+    p.cargo("tree --prune foo")
+        .with_stdout(
+            "\
+foo v0.1.0 ([..]/foo)
+├── a v1.0.0
+│   └── b v1.0.0
+│       └── c v1.0.0
+└── c v1.0.0
+[build-dependencies]
+└── bdep v1.0.0
+    └── b v1.0.0 (*)
+[dev-dependencies]
+└── devdep v1.0.0
+    └── b v1.0.0 (*)
+",
+        )
+        .run();
+
+    // dep not exist
+    p.cargo("tree --prune no-dep")
+        .with_stderr(
+            "\
+[ERROR] package ID specification `no-dep` did not match any packages
+
+<tab>Did you mean `bdep`?
+",
+        )
+        .with_status(101)
         .run();
 }

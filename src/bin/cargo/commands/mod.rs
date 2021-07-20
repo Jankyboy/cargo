@@ -6,6 +6,7 @@ pub fn builtin() -> Vec<App> {
         build::cli(),
         check::cli(),
         clean::cli(),
+        config::cli(),
         doc::cli(),
         fetch::cli(),
         fix::cli(),
@@ -15,6 +16,7 @@ pub fn builtin() -> Vec<App> {
         install::cli(),
         locate_project::cli(),
         login::cli(),
+        logout::cli(),
         metadata::cli(),
         new::cli(),
         owner::cli(),
@@ -22,6 +24,7 @@ pub fn builtin() -> Vec<App> {
         pkgid::cli(),
         publish::cli(),
         read_manifest::cli(),
+        report::cli(),
         run::cli(),
         rustc::cli(),
         rustdoc::cli(),
@@ -43,6 +46,7 @@ pub fn builtin_exec(cmd: &str) -> Option<fn(&mut Config, &ArgMatches<'_>) -> Cli
         "build" => build::exec,
         "check" => check::exec,
         "clean" => clean::exec,
+        "config" => config::exec,
         "doc" => doc::exec,
         "fetch" => fetch::exec,
         "fix" => fix::exec,
@@ -52,6 +56,7 @@ pub fn builtin_exec(cmd: &str) -> Option<fn(&mut Config, &ArgMatches<'_>) -> Cli
         "install" => install::exec,
         "locate-project" => locate_project::exec,
         "login" => login::exec,
+        "logout" => logout::exec,
         "metadata" => metadata::exec,
         "new" => new::exec,
         "owner" => owner::exec,
@@ -59,6 +64,7 @@ pub fn builtin_exec(cmd: &str) -> Option<fn(&mut Config, &ArgMatches<'_>) -> Cli
         "pkgid" => pkgid::exec,
         "publish" => publish::exec,
         "read-manifest" => read_manifest::exec,
+        "report" => report::exec,
         "run" => run::exec,
         "rustc" => rustc::exec,
         "rustdoc" => rustdoc::exec,
@@ -80,6 +86,7 @@ pub mod bench;
 pub mod build;
 pub mod check;
 pub mod clean;
+pub mod config;
 pub mod doc;
 pub mod fetch;
 pub mod fix;
@@ -90,6 +97,7 @@ pub mod init;
 pub mod install;
 pub mod locate_project;
 pub mod login;
+pub mod logout;
 pub mod metadata;
 pub mod new;
 pub mod owner;
@@ -97,6 +105,7 @@ pub mod package;
 pub mod pkgid;
 pub mod publish;
 pub mod read_manifest;
+pub mod report;
 pub mod run;
 pub mod rustc;
 pub mod rustdoc;

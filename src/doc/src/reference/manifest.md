@@ -1,7 +1,7 @@
 ## The Manifest Format
 
-The `Cargo.toml` file for each package is called its *manifest*. Every manifest
-file consists of the following sections:
+The `Cargo.toml` file for each package is called its *manifest*. It is written
+in the [TOML] format. Every manifest file consists of the following sections:
 
 * [`cargo-features`](unstable.md) — Unstable, nightly-only features.
 * [`[package]`](#the-package-section) — Defines a package.
@@ -30,6 +30,7 @@ file consists of the following sections:
   * [`autoexamples`](cargo-targets.md#target-auto-discovery) — Disables example auto discovery.
   * [`autotests`](cargo-targets.md#target-auto-discovery) — Disables test auto discovery.
   * [`autobenches`](cargo-targets.md#target-auto-discovery) — Disables bench auto discovery.
+  * [`resolver`](resolver.md#resolver-versions) — Sets the dependency resolver to use.
 * Target tables: (see [configuration](cargo-targets.md#configuring-a-target) for settings)
   * [`[lib]`](cargo-targets.md#library) — Library target settings.
   * [`[[bin]]`](cargo-targets.md#binaries) — Binary target settings.
@@ -97,30 +98,36 @@ Versioning](https://semver.org/), so make sure you follow some basic rules:
 
 See the [Resolver] chapter for more information on how Cargo uses versions to
 resolve dependencies, and for guidelines on setting your own version. See the
-[Semver compatibility] chapter for more details on exactly what constitutes a
+[SemVer compatibility] chapter for more details on exactly what constitutes a
 breaking change.
 
 [Resolver]: resolver.md
-[Semver compatibility]: semver.md
+[SemVer compatibility]: semver.md
 
 <a id="the-authors-field-optional"></a>
 #### The `authors` field
 
-The `authors` field lists people or organizations that are considered the
-"authors" of the package. The exact meaning is open to interpretation — it may
-list the original or primary authors, current maintainers, or owners of the
-package. These names will be listed on the crate's page on
-[crates.io]. An optional email address may be included within angled
-brackets at the end of each author.
+The optional `authors` field lists people or organizations that are considered
+the "authors" of the package. The exact meaning is open to interpretation — it
+may list the original or primary authors, current maintainers, or owners of the
+package. An optional email address may be included within angled brackets at
+the end of each author entry.
 
-> **Note**: [crates.io] requires at least one author to be listed.
+This field is only surfaced in package metadata and in the `CARGO_PKG_AUTHORS`
+environment variable within `build.rs`. It is not displayed in the [crates.io]
+user interface.
+
+> **Warning**: Package manifests cannot be changed once published, so this
+> field cannot be changed or removed in already-published versions of a
+> package.
 
 <a id="the-edition-field-optional"></a>
 #### The `edition` field
 
-You can opt in to a specific [Rust Edition] for your package with the
-`edition` key in `Cargo.toml`. If you don't specify the edition, it will
-default to 2015.
+The `edition` key is an optional key that affects which [Rust Edition] your package
+is compiled with. Setting the `edition` key in `[package]` will affect all
+targets/crates in the package, including test suites, benchmarks, binaries,
+examples, etc.
 
 ```toml
 [package]
@@ -128,11 +135,14 @@ default to 2015.
 edition = '2018'
 ```
 
-The `edition` key affects which edition your package is compiled with. Cargo
-will always generate packages via [`cargo new`] with the `edition` key set to the
-latest edition. Setting the `edition` key in `[package]` will affect all
-targets/crates in the package, including test suites, benchmarks, binaries,
-examples, etc.
+Most manifests have the `edition` field filled in automatically by [`cargo new`]
+with the latest stable edition. By default `cargo new` creates a manifest with
+the 2018 edition currently.
+
+If the `edition` field is not present in `Cargo.toml`, then the 2015 edition is
+assumed for backwards compatibility. Note that all manifests
+created with [`cargo new`] will not use this historical fallback because they
+will have `edition` explicitly specified to a newer value.
 
 #### The `description` field
 
@@ -209,7 +219,7 @@ containing the text of the license (relative to this `Cargo.toml`).
 
 [crates.io] interprets the `license` field as an [SPDX 2.1 license
 expression][spdx-2.1-license-expressions]. The name must be a known license
-from the [SPDX license list 3.6][spdx-license-list-3.6]. Parentheses are not
+from the [SPDX license list 3.11][spdx-license-list-3.11]. Parentheses are not
 currently supported. See the [SPDX site] for more information.
 
 SPDX license expressions support AND and OR operators to combine multiple
@@ -332,10 +342,57 @@ links = "foo"
 <a id="the-exclude-and-include-fields-optional"></a>
 #### The `exclude` and `include` fields
 
-You can explicitly specify that a set of file patterns should be ignored or
-included for the purposes of packaging. The patterns specified in the
-`exclude` field identify a set of files that are not included, and the
-patterns in `include` specify files that are explicitly included.
+The `exclude` and `include` fields can be used to explicitly specify which
+files are included when packaging a project to be [published][publishing],
+and certain kinds of change tracking (described below).
+The patterns specified in the `exclude` field identify a set of files that are
+not included, and the patterns in `include` specify files that are explicitly
+included.
+You may run [`cargo package --list`][`cargo package`] to verify which files will
+be included in the package.
+
+```toml
+[package]
+# ...
+exclude = ["/ci", "images/", ".*"]
+```
+
+```toml
+[package]
+# ...
+include = ["/src", "COPYRIGHT", "/examples", "!/examples/big_example"]
+```
+
+The default if neither field is specified is to include all files from the
+root of the package, except for the exclusions listed below.
+
+If `include` is not specified, then the following files will be excluded:
+
+* If the package is not in a git repository, all "hidden" files starting with
+  a dot will be skipped.
+* If the package is in a git repository, any files that are ignored by the
+  [gitignore] rules of the repository and global git configuration will be
+  skipped.
+
+Regardless of whether `exclude` or `include` is specified, the following files
+are always excluded:
+
+* Any sub-packages will be skipped (any subdirectory that contains a
+  `Cargo.toml` file).
+* A directory named `target` in the root of the package will be skipped.
+
+The following files are always included:
+
+* The `Cargo.toml` file of the package itself is always included, it does not
+  need to be listed in `include`.
+* A minimized `Cargo.lock` is automatically included if the package contains a
+  binary or example target, see [`cargo package`] for more information.
+* If a [`license-file`](#the-license-and-license-file-fields) is specified, it
+  is always included.
+
+The options are mutually exclusive; setting `include` will override an
+`exclude`. If you need to have exclusions to a set of `include` files, use the
+`!` operator described below.
 
 The patterns should be [gitignore]-style patterns. Briefly:
 
@@ -359,29 +416,9 @@ The patterns should be [gitignore]-style patterns. Briefly:
   `foo`.
 - `/**/` matches zero or more directories. For example, `a/**/b` matches
   `a/b`, `a/x/b`, `a/x/y/b`, and so on.
-- `!` prefix negates a pattern. For example, a pattern of `src/**.rs` and
+- `!` prefix negates a pattern. For example, a pattern of `src/*.rs` and
   `!foo.rs` would match all files with the `.rs` extension inside the `src`
   directory, except for any file named `foo.rs`.
-
-If git is being used for a package, the `exclude` field will be seeded with
-the `gitignore` settings from the repository.
-
-```toml
-[package]
-# ...
-exclude = ["build/**/*.o", "doc/**/*.html"]
-```
-
-```toml
-[package]
-# ...
-include = ["src/**/*", "Cargo.toml"]
-```
-
-The options are mutually exclusive: setting `include` will override an
-`exclude`. Note that `include` must be an exhaustive list of files as otherwise
-necessary source files may not be included. The package's `Cargo.toml` is
-automatically included.
 
 The include/exclude list is also used for change tracking in some situations.
 For targets built with `rustdoc`, it is used to determine the list of files to
@@ -508,14 +545,16 @@ more detail.
 
 [`cargo init`]: ../commands/cargo-init.md
 [`cargo new`]: ../commands/cargo-new.md
+[`cargo package`]: ../commands/cargo-package.md
 [`cargo run`]: ../commands/cargo-run.md
 [crates.io]: https://crates.io/
 [docs.rs]: https://docs.rs/
 [publishing]: publishing.md
 [Rust Edition]: ../../edition-guide/index.html
 [spdx-2.1-license-expressions]: https://spdx.org/spdx-specification-21-web-version#h.jxpfx0ykyb60
-[spdx-license-list-3.6]: https://github.com/spdx/license-list-data/tree/v3.6
+[spdx-license-list-3.11]: https://github.com/spdx/license-list-data/tree/v3.11
 [SPDX site]: https://spdx.org/license-list
+[TOML]: https://toml.io/
 
 <script>
 (function() {
@@ -532,9 +571,9 @@ more detail.
         "#virtual-manifest": "workspaces.html",
         "#package-selection": "workspaces.html#package-selection",
         "#the-features-section": "features.html#the-features-section",
-        "#rules": "features.html#rules",
-        "#usage-in-end-products": "features.html#usage-in-end-products",
-        "#usage-in-packages": "features.html#usage-in-packages",
+        "#rules": "features.html",
+        "#usage-in-end-products": "features.html",
+        "#usage-in-packages": "features.html",
         "#the-patch-section": "overriding-dependencies.html#the-patch-section",
         "#using-patch-with-multiple-versions": "overriding-dependencies.html#using-patch-with-multiple-versions",
         "#the-replace-section": "overriding-dependencies.html#the-replace-section",

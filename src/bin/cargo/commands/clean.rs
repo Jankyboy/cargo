@@ -1,6 +1,7 @@
 use crate::command_prelude::*;
 
 use cargo::ops::{self, CleanOptions};
+use cargo::util::print_available_packages;
 
 pub fn cli() -> App {
     subcommand("clean")
@@ -18,11 +19,16 @@ pub fn cli() -> App {
 
 pub fn exec(config: &mut Config, args: &ArgMatches<'_>) -> CliResult {
     let ws = args.workspace(config)?;
+
+    if args.is_present_with_zero_values("package") {
+        print_available_packages(&ws)?;
+    }
+
     let opts = CleanOptions {
         config,
         spec: values(args, "package"),
         targets: args.targets(),
-        requested_profile: args.get_profile_name(config, "dev", ProfileChecking::Checked)?,
+        requested_profile: args.get_profile_name(config, "dev", ProfileChecking::Custom)?,
         profile_specified: args.is_present("profile") || args.is_present("release"),
         doc: args.is_present("doc"),
     };

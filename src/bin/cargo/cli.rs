@@ -1,10 +1,12 @@
-use cargo::core::features;
+use cargo::core::{features, CliUnstable};
 use cargo::{self, drop_print, drop_println, CliResult, Config};
 use clap::{AppSettings, Arg, ArgMatches};
+use itertools::Itertools;
 
 use super::commands;
 use super::list_commands;
 use crate::command_prelude::*;
+use cargo::core::features::HIDDEN;
 
 pub fn main(config: &mut Config) -> CliResult {
     // CAUTION: Be careful with using `config` until it is configured below.
@@ -30,22 +32,40 @@ pub fn main(config: &mut Config) -> CliResult {
     };
 
     if args.value_of("unstable-features") == Some("help") {
+        let options = CliUnstable::help();
+        let non_hidden_options: Vec<(String, String)> = options
+            .iter()
+            .filter(|(_, help_message)| *help_message != HIDDEN)
+            .map(|(name, help)| (name.to_string(), help.to_string()))
+            .collect();
+        let longest_option = non_hidden_options
+            .iter()
+            .map(|(option_name, _)| option_name.len())
+            .max()
+            .unwrap_or(0);
+        let help_lines: Vec<String> = non_hidden_options
+            .iter()
+            .map(|(option_name, option_help_message)| {
+                let option_name_kebab_case = option_name.replace("_", "-");
+                let padding = " ".repeat(longest_option - option_name.len()); // safe to substract
+                format!(
+                    "    -Z {}{} -- {}",
+                    option_name_kebab_case, padding, option_help_message
+                )
+            })
+            .collect();
+        let joined = help_lines.join("\n");
         drop_println!(
             config,
             "
 Available unstable (nightly-only) flags:
 
-    -Z avoid-dev-deps   -- Avoid installing dev-dependencies if possible
-    -Z minimal-versions -- Install minimal dependency versions instead of maximum
-    -Z no-index-update  -- Do not update the registry, avoids a network request for benchmarking
-    -Z unstable-options -- Allow the usage of unstable options
-    -Z timings          -- Display concurrency information
-    -Z doctest-xcompile -- Compile and run doctests for non-host target using runner config
-    -Z terminal-width   -- Provide a terminal width to rustc for error truncation
+{}
 
-Run with 'cargo -Z [FLAG] [SUBCOMMAND]'"
+Run with 'cargo -Z [FLAG] [SUBCOMMAND]'",
+            joined
         );
-        if !features::nightly_features_allowed() {
+        if !config.nightly_features_allowed {
             drop_println!(
                 config,
                 "\nUnstable flags are only available on the nightly channel \
@@ -118,7 +138,7 @@ Run with 'cargo -Z [FLAG] [SUBCOMMAND]'"
 pub fn get_version_string(is_verbose: bool) -> String {
     let version = cargo::version();
     let mut version_string = version.to_string();
-    version_string.push_str("\n");
+    version_string.push('\n');
     if is_verbose {
         version_string.push_str(&format!(
             "release: {}.{}.{}\n",
@@ -150,6 +170,17 @@ fn expand_aliases(
                     cmd,
                 ))?;
             }
+            (Some(_), None) => {
+                // Command is built-in and is not conflicting with alias, but contains ignored values.
+                if let Some(mut values) = args.values_of("") {
+                    config.shell().warn(format!(
+                        "trailing arguments after built-in command `{}` are ignored: `{}`",
+                        cmd,
+                        values.join(" "),
+                    ))?;
+                }
+            }
+            (None, None) => {}
             (_, Some(mut alias)) => {
                 alias.extend(
                     args.values_of("")
@@ -167,7 +198,6 @@ fn expand_aliases(
                 let (expanded_args, _) = expand_aliases(config, new_args)?;
                 return Ok((expanded_args, global_args));
             }
-            (_, None) => {}
         }
     };
 
@@ -289,7 +319,7 @@ Some common cargo commands are (see all commands with --list):
     build, b    Compile the current package
     check, c    Analyze the current package and report errors, but don't build object files
     clean       Remove the target directory
-    doc         Build this package's and its dependencies' documentation
+    doc, d      Build this package's and its dependencies' documentation
     new         Create a new cargo package
     init        Create a new cargo package in an existing directory
     run, r      Run a binary or example of the local package
@@ -325,9 +355,12 @@ See 'cargo help <command>' for more information on a specific command.\n",
         .arg(opt("locked", "Require Cargo.lock is up to date").global(true))
         .arg(opt("offline", "Run without accessing the network").global(true))
         .arg(
-            multi_opt("config", "KEY=VALUE", "Override a configuration value")
-                .global(true)
-                .hidden(true),
+            multi_opt(
+                "config",
+                "KEY=VALUE",
+                "Override a configuration value (unstable)",
+            )
+            .global(true),
         )
         .arg(
             Arg::with_name("unstable-features")

@@ -6,8 +6,10 @@ use cargo_test_support::registry::{self, Package};
 use cargo_test_support::{
     basic_manifest, cargo_process, git, path2url, paths, project, symlink_supported, t,
 };
+use flate2::read::GzDecoder;
 use std::fs::{self, read_to_string, File};
 use std::path::Path;
+use tar::Archive;
 
 #[cargo_test]
 fn simple() {
@@ -285,8 +287,47 @@ fn path_dependency_no_version() {
             "\
 [WARNING] manifest has no documentation, homepage or repository.
 See https://doc.rust-lang.org/cargo/reference/manifest.html#package-metadata for more info.
-[ERROR] all path dependencies must have a version specified when packaging.
-dependency `bar` does not specify a version.
+[ERROR] all dependencies must have a version specified when packaging.
+dependency `bar` does not specify a version\n\
+Note: The packaged dependency will use the version from crates.io,
+the `path` specification will be removed from the dependency declaration.
+",
+        )
+        .run();
+}
+
+#[cargo_test]
+fn git_dependency_no_version() {
+    registry::init();
+
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [project]
+                name = "foo"
+                version = "0.0.1"
+                authors = []
+                license = "MIT"
+                description = "foo"
+
+                [dependencies.foo]
+                git = "git://path/to/nowhere"
+            "#,
+        )
+        .file("src/main.rs", "fn main() {}")
+        .build();
+
+    p.cargo("package")
+        .with_status(101)
+        .with_stderr(
+            "\
+[WARNING] manifest has no documentation, homepage or repository.
+See https://doc.rust-lang.org/cargo/reference/manifest.html#package-metadata for more info.
+[ERROR] all dependencies must have a version specified when packaging.
+dependency `foo` does not specify a version
+Note: The packaged dependency will use the version from crates.io,
+the `git` specification will be removed from the dependency declaration.
 ",
         )
         .run();
@@ -815,7 +856,61 @@ to proceed despite this and include the uncommitted changes, pass the `--allow-d
 }
 
 #[cargo_test]
+fn dirty_ignored() {
+    // Cargo warns about an ignored file that will be published.
+    let (p, repo) = git::new_repo("foo", |p| {
+        p.file(
+            "Cargo.toml",
+            r#"
+                [package]
+                name = "foo"
+                version = "0.1.0"
+                description = "foo"
+                license = "foo"
+                documentation = "foo"
+                include = ["src", "build"]
+            "#,
+        )
+        .file("src/lib.rs", "")
+        .file(".gitignore", "build")
+    });
+    // Example of adding a file that is confusingly ignored by an overzealous
+    // gitignore rule.
+    p.change_file("src/build/mod.rs", "");
+    p.cargo("package --list")
+        .with_status(101)
+        .with_stderr(
+            "\
+error: 1 files in the working directory contain changes that were not yet committed into git:
+
+src/build/mod.rs
+
+to proceed despite this and include the uncommitted changes, pass the `--allow-dirty` flag
+",
+        )
+        .run();
+    // Add the ignored file and make sure it is included.
+    let mut index = t!(repo.index());
+    t!(index.add_path(Path::new("src/build/mod.rs")));
+    t!(index.write());
+    git::commit(&repo);
+    p.cargo("package --list")
+        .with_stderr("")
+        .with_stdout(
+            "\
+.cargo_vcs_info.json
+Cargo.toml
+Cargo.toml.orig
+src/build/mod.rs
+src/lib.rs
+",
+        )
+        .run();
+}
+
+#[cargo_test]
 fn generated_manifest() {
+    registry::alt_init();
     Package::new("abc", "1.0.0").publish();
     Package::new("def", "1.0.0").alternative(true).publish();
     Package::new("ghi", "1.0.0").publish();
@@ -1041,7 +1136,7 @@ Caused by:
   failed to parse the `edition` key
 
 Caused by:
-  supported edition values are `2015` or `2018`, but `chicken` is unknown
+  supported edition values are `2015`, `2018`, or `2021`, but `chicken` is unknown
 "
             .to_string(),
         )
@@ -1073,7 +1168,7 @@ Caused by:
   failed to parse the `edition` key
 
 Caused by:
-  this version of Cargo is older than the `2038` edition, and only supports `2015` and `2018` editions.
+  this version of Cargo is older than the `2038` edition, and only supports `2015`, `2018`, and `2021` editions.
 "
             .to_string(),
         )
@@ -1839,8 +1934,10 @@ src/main.rs
         .with_status(101)
         .with_stderr(
             "\
-error: all path dependencies must have a version specified when packaging.
-dependency `bar` does not specify a version.
+[ERROR] all dependencies must have a version specified when packaging.
+dependency `bar` does not specify a version
+Note: The packaged dependency will use the version from crates.io,
+the `path` specification will be removed from the dependency declaration.
 ",
         )
         .run();
@@ -1916,4 +2013,95 @@ src/main.rs
             long_name
         ))
         .run();
+}
+
+#[cargo_test]
+fn reproducible_output() {
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [project]
+                name = "foo"
+                version = "0.0.1"
+                authors = []
+                exclude = ["*.txt"]
+                license = "MIT"
+                description = "foo"
+            "#,
+        )
+        .file("src/main.rs", r#"fn main() { println!("hello"); }"#)
+        .build();
+
+    p.cargo("package").run();
+    assert!(p.root().join("target/package/foo-0.0.1.crate").is_file());
+
+    let f = File::open(&p.root().join("target/package/foo-0.0.1.crate")).unwrap();
+    let decoder = GzDecoder::new(f);
+    let mut archive = Archive::new(decoder);
+    for ent in archive.entries().unwrap() {
+        let ent = ent.unwrap();
+        println!("checking {:?}", ent.path());
+        let header = ent.header();
+        assert_eq!(header.mode().unwrap(), 0o644);
+        assert!(header.mtime().unwrap() != 0);
+        assert_eq!(header.username().unwrap().unwrap(), "");
+        assert_eq!(header.groupname().unwrap().unwrap(), "");
+    }
+}
+
+#[cargo_test]
+fn package_with_resolver_and_metadata() {
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [package]
+                name = "foo"
+                version = "0.0.1"
+                authors = []
+                resolver = '2'
+
+                [package.metadata.docs.rs]
+                all-features = true
+            "#,
+        )
+        .file("src/lib.rs", "")
+        .build();
+
+    p.cargo("package").run();
+}
+
+#[cargo_test]
+fn deleted_git_working_tree() {
+    // When deleting a file, but not staged, cargo should ignore the file.
+    let (p, repo) = git::new_repo("foo", |p| {
+        p.file("src/lib.rs", "").file("src/main.rs", "fn main() {}")
+    });
+    p.root().join("src/lib.rs").rm_rf();
+    p.cargo("package --allow-dirty --list")
+        .with_stdout(
+            "\
+Cargo.lock
+Cargo.toml
+Cargo.toml.orig
+src/main.rs
+",
+        )
+        .run();
+    p.cargo("package --allow-dirty").run();
+    let mut index = t!(repo.index());
+    t!(index.remove(Path::new("src/lib.rs"), 0));
+    t!(index.write());
+    p.cargo("package --allow-dirty --list")
+        .with_stdout(
+            "\
+Cargo.lock
+Cargo.toml
+Cargo.toml.orig
+src/main.rs
+",
+        )
+        .run();
+    p.cargo("package --allow-dirty").run();
 }

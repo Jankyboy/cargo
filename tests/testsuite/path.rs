@@ -187,7 +187,7 @@ fn cargo_compile_with_root_dev_deps_with_testing() {
 [COMPILING] [..] v0.5.0 ([..])
 [COMPILING] [..] v0.5.0 ([..])
 [FINISHED] test [unoptimized + debuginfo] target(s) in [..]
-[RUNNING] target/debug/deps/foo-[..][EXE]",
+[RUNNING] [..] (target/debug/deps/foo-[..][EXE])",
         )
         .with_stdout_contains("running 0 tests")
         .run();
@@ -770,7 +770,7 @@ fn dev_deps_no_rebuild_lib() {
 [COMPILING] [..] v0.5.0 ([CWD][..])
 [COMPILING] [..] v0.5.0 ([CWD][..])
 [FINISHED] test [unoptimized + debuginfo] target(s) in [..]
-[RUNNING] target/debug/deps/foo-[..][EXE]",
+[RUNNING] [..] (target/debug/deps/foo-[..][EXE])",
         )
         .with_stdout_contains("running 0 tests")
         .run();
@@ -964,9 +964,10 @@ fn invalid_path_dep_in_workspace_with_lockfile() {
         .with_status(101)
         .with_stderr(
             "\
-error: no matching package named `bar` found
+error: no matching package found
+searched package name: `bar`
+perhaps you meant:      foo
 location searched: [..]
-perhaps you meant: foo
 required by package `foo v0.5.0 ([..])`
 ",
         )
@@ -1061,5 +1062,77 @@ Caused by:
   [..]
 ",
         )
+        .run();
+}
+
+#[cargo_test]
+fn catch_tricky_cycle() {
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [package]
+                name = "message"
+                version = "0.1.0"
+
+                [dev-dependencies]
+                test = { path = "test" }
+            "#,
+        )
+        .file("src/lib.rs", "")
+        .file(
+            "tangle/Cargo.toml",
+            r#"
+                [package]
+                name = "tangle"
+                version = "0.1.0"
+
+                [dependencies]
+                message = { path = ".." }
+                snapshot = { path = "../snapshot" }
+            "#,
+        )
+        .file("tangle/src/lib.rs", "")
+        .file(
+            "snapshot/Cargo.toml",
+            r#"
+                [package]
+                name = "snapshot"
+                version = "0.1.0"
+
+                [dependencies]
+                ledger = { path = "../ledger" }
+            "#,
+        )
+        .file("snapshot/src/lib.rs", "")
+        .file(
+            "ledger/Cargo.toml",
+            r#"
+                [package]
+                name = "ledger"
+                version = "0.1.0"
+
+                [dependencies]
+                tangle = { path = "../tangle" }
+            "#,
+        )
+        .file("ledger/src/lib.rs", "")
+        .file(
+            "test/Cargo.toml",
+            r#"
+                [package]
+                name = "test"
+                version = "0.1.0"
+
+                [dependencies]
+                snapshot = { path = "../snapshot" }
+            "#,
+        )
+        .file("test/src/lib.rs", "")
+        .build();
+
+    p.cargo("test")
+        .with_stderr_contains("[..]cyclic package dependency[..]")
+        .with_status(101)
         .run();
 }

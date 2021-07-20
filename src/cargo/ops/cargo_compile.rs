@@ -24,24 +24,28 @@
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::hash::{Hash, Hasher};
-use std::iter::FromIterator;
 use std::sync::Arc;
 
-use crate::core::compiler::standard_lib;
 use crate::core::compiler::unit_dependencies::build_unit_dependencies;
 use crate::core::compiler::unit_graph::{self, UnitDep, UnitGraph};
+use crate::core::compiler::{standard_lib, TargetInfo};
 use crate::core::compiler::{BuildConfig, BuildContext, Compilation, Context};
 use crate::core::compiler::{CompileKind, CompileMode, CompileTarget, RustcTargetData, Unit};
 use crate::core::compiler::{DefaultExecutor, Executor, UnitInterner};
 use crate::core::profiles::{Profiles, UnitFor};
-use crate::core::resolver::features::{self, FeaturesFor};
-use crate::core::resolver::{HasDevUnits, Resolve, ResolveOpts};
+use crate::core::resolver::features::{self, CliFeatures, FeaturesFor};
+use crate::core::resolver::{HasDevUnits, Resolve};
 use crate::core::{FeatureValue, Package, PackageSet, Shell, Summary, Target};
-use crate::core::{PackageId, PackageIdSpec, TargetKind, Workspace};
+use crate::core::{PackageId, PackageIdSpec, SourceId, TargetKind, Workspace};
+use crate::drop_println;
 use crate::ops;
 use crate::ops::resolve::WorkspaceResolve;
 use crate::util::config::Config;
+use crate::util::interning::InternedString;
+use crate::util::restricted_names::is_glob_pattern;
 use crate::util::{closest_msg, profile, CargoResult, StableHasher};
+
+use anyhow::Context as _;
 
 /// Contains information about how a package should be compiled.
 ///
@@ -55,12 +59,8 @@ use crate::util::{closest_msg, profile, CargoResult, StableHasher};
 pub struct CompileOptions {
     /// Configuration information for a rustc build
     pub build_config: BuildConfig,
-    /// Extra features to build for the root package
-    pub features: Vec<String>,
-    /// Flag whether all available features should be built for the root package
-    pub all_features: bool,
-    /// Flag if the default feature should be built for the root package
-    pub no_default_features: bool,
+    /// Feature flags requested by the user.
+    pub cli_features: CliFeatures,
     /// A set of packages to build.
     pub spec: Packages,
     /// Filter to apply to the root package to select which targets will be
@@ -76,15 +76,16 @@ pub struct CompileOptions {
     /// Whether the `--document-private-items` flags was specified and should
     /// be forwarded to `rustdoc`.
     pub rustdoc_document_private_items: bool,
+    /// Whether the build process should check the minimum Rust version
+    /// defined in the cargo metadata for a crate.
+    pub honor_rust_version: bool,
 }
 
 impl<'a> CompileOptions {
     pub fn new(config: &Config, mode: CompileMode) -> CargoResult<CompileOptions> {
         Ok(CompileOptions {
             build_config: BuildConfig::new(config, None, &[], mode)?,
-            features: Vec::new(),
-            all_features: false,
-            no_default_features: false,
+            cli_features: CliFeatures::new_all(false),
             spec: ops::Packages::Packages(Vec::new()),
             filter: CompileFilter::Default {
                 required_features_filterable: false,
@@ -93,6 +94,7 @@ impl<'a> CompileOptions {
             target_rustc_args: None,
             local_rustdoc_args: None,
             rustdoc_document_private_items: false,
+            honor_rust_version: true,
         })
     }
 }
@@ -116,6 +118,7 @@ impl Packages {
         })
     }
 
+    /// Converts selected packages from a workspace to `PackageIdSpec`s.
     pub fn to_package_id_specs(&self, ws: &Workspace<'_>) -> CargoResult<Vec<PackageIdSpec>> {
         let specs = match self {
             Packages::All => ws
@@ -124,33 +127,40 @@ impl Packages {
                 .map(PackageIdSpec::from_package_id)
                 .collect(),
             Packages::OptOut(opt_out) => {
-                let mut opt_out = BTreeSet::from_iter(opt_out.iter().cloned());
-                let packages = ws
+                let (mut patterns, mut names) = opt_patterns_and_names(opt_out)?;
+                let specs = ws
                     .members()
-                    .filter(|pkg| !opt_out.remove(pkg.name().as_str()))
+                    .filter(|pkg| {
+                        !names.remove(pkg.name().as_str()) && !match_patterns(pkg, &mut patterns)
+                    })
                     .map(Package::package_id)
                     .map(PackageIdSpec::from_package_id)
                     .collect();
-                if !opt_out.is_empty() {
-                    ws.config().shell().warn(format!(
-                        "excluded package(s) {} not found in workspace `{}`",
-                        opt_out
-                            .iter()
-                            .map(|x| x.as_ref())
-                            .collect::<Vec<_>>()
-                            .join(", "),
-                        ws.root().display(),
-                    ))?;
-                }
-                packages
+                let warn = |e| ws.config().shell().warn(e);
+                emit_package_not_found(ws, names, true).or_else(warn)?;
+                emit_pattern_not_found(ws, patterns, true).or_else(warn)?;
+                specs
             }
             Packages::Packages(packages) if packages.is_empty() => {
                 vec![PackageIdSpec::from_package_id(ws.current()?.package_id())]
             }
-            Packages::Packages(packages) => packages
-                .iter()
-                .map(|p| PackageIdSpec::parse(p))
-                .collect::<CargoResult<Vec<_>>>()?,
+            Packages::Packages(opt_in) => {
+                let (mut patterns, packages) = opt_patterns_and_names(opt_in)?;
+                let mut specs = packages
+                    .iter()
+                    .map(|p| PackageIdSpec::parse(p))
+                    .collect::<CargoResult<Vec<_>>>()?;
+                if !patterns.is_empty() {
+                    let matched_pkgs = ws
+                        .members()
+                        .filter(|pkg| match_patterns(pkg, &mut patterns))
+                        .map(Package::package_id)
+                        .map(PackageIdSpec::from_package_id);
+                    specs.extend(matched_pkgs);
+                }
+                emit_pattern_not_found(ws, patterns, false)?;
+                specs
+            }
             Packages::Default => ws
                 .default_members()
                 .map(Package::package_id)
@@ -170,27 +180,35 @@ impl Packages {
         Ok(specs)
     }
 
+    /// Gets a list of selected packages from a workspace.
     pub fn get_packages<'ws>(&self, ws: &'ws Workspace<'_>) -> CargoResult<Vec<&'ws Package>> {
         let packages: Vec<_> = match self {
             Packages::Default => ws.default_members().collect(),
             Packages::All => ws.members().collect(),
-            Packages::OptOut(opt_out) => ws
-                .members()
-                .filter(|pkg| !opt_out.iter().any(|name| pkg.name().as_str() == name))
-                .collect(),
-            Packages::Packages(packages) => packages
-                .iter()
-                .map(|name| {
-                    ws.members()
-                        .find(|pkg| pkg.name().as_str() == name)
-                        .ok_or_else(|| {
-                            anyhow::format_err!(
-                                "package `{}` is not a member of the workspace",
-                                name
-                            )
-                        })
-                })
-                .collect::<CargoResult<Vec<_>>>()?,
+            Packages::OptOut(opt_out) => {
+                let (mut patterns, mut names) = opt_patterns_and_names(opt_out)?;
+                let packages = ws
+                    .members()
+                    .filter(|pkg| {
+                        !names.remove(pkg.name().as_str()) && !match_patterns(pkg, &mut patterns)
+                    })
+                    .collect();
+                emit_package_not_found(ws, names, true)?;
+                emit_pattern_not_found(ws, patterns, true)?;
+                packages
+            }
+            Packages::Packages(opt_in) => {
+                let (mut patterns, mut names) = opt_patterns_and_names(opt_in)?;
+                let packages = ws
+                    .members()
+                    .filter(|pkg| {
+                        names.remove(pkg.name().as_str()) || match_patterns(pkg, &mut patterns)
+                    })
+                    .collect();
+                emit_package_not_found(ws, names, false)?;
+                emit_pattern_not_found(ws, patterns, false)?;
+                packages
+            }
         };
         Ok(packages)
     }
@@ -263,13 +281,43 @@ pub fn compile_ws<'a>(
     let interner = UnitInterner::new();
     let bcx = create_bcx(ws, options, &interner)?;
     if options.build_config.unit_graph {
-        unit_graph::emit_serialized_unit_graph(&bcx.roots, &bcx.unit_graph)?;
-        return Ok(Compilation::new(&bcx)?);
+        unit_graph::emit_serialized_unit_graph(&bcx.roots, &bcx.unit_graph, ws.config())?;
+        return Compilation::new(&bcx);
     }
-
     let _p = profile::start("compiling");
     let cx = Context::new(&bcx)?;
     cx.compile(exec)
+}
+
+pub fn print<'a>(
+    ws: &Workspace<'a>,
+    options: &CompileOptions,
+    print_opt_value: &str,
+) -> CargoResult<()> {
+    let CompileOptions {
+        ref build_config,
+        ref target_rustc_args,
+        ..
+    } = *options;
+    let config = ws.config();
+    let rustc = config.load_global_rustc(Some(ws))?;
+    for (index, kind) in build_config.requested_kinds.iter().enumerate() {
+        if index != 0 {
+            drop_println!(config);
+        }
+        let target_info = TargetInfo::new(config, &build_config.requested_kinds, &rustc, *kind)?;
+        let mut process = rustc.process();
+        process.args(&target_info.rustflags);
+        if let Some(args) = target_rustc_args {
+            process.args(args);
+        }
+        if let CompileKind::Target(t) = kind {
+            process.arg("--target").arg(t.short_name());
+        }
+        process.arg("--print").arg(print_opt_value);
+        process.exec()?;
+    }
+    Ok(())
 }
 
 pub fn create_bcx<'a, 'cfg>(
@@ -280,14 +328,13 @@ pub fn create_bcx<'a, 'cfg>(
     let CompileOptions {
         ref build_config,
         ref spec,
-        ref features,
-        all_features,
-        no_default_features,
+        ref cli_features,
         ref filter,
         ref target_rustdoc_args,
         ref target_rustc_args,
         ref local_rustdoc_args,
         rustdoc_document_private_items,
+        honor_rust_version,
     } = *options;
     let config = ws.config();
 
@@ -317,8 +364,6 @@ pub fn create_bcx<'a, 'cfg>(
     let target_data = RustcTargetData::new(ws, &build_config.requested_kinds)?;
 
     let specs = spec.to_package_id_specs(ws)?;
-    let dev_deps = ws.require_optional_deps() || filter.need_dev_deps(build_config.mode);
-    let opts = ResolveOpts::new(dev_deps, features, all_features, !no_default_features);
     let has_dev_units = if filter.need_dev_deps(build_config.mode) {
         HasDevUnits::Yes
     } else {
@@ -328,7 +373,7 @@ pub fn create_bcx<'a, 'cfg>(
         ws,
         &target_data,
         &build_config.requested_kinds,
-        &opts,
+        cli_features,
         &specs,
         has_dev_units,
         crate::core::resolver::features::ForceAllTargets::No,
@@ -402,12 +447,7 @@ pub fn create_bcx<'a, 'cfg>(
         );
     }
 
-    let profiles = Profiles::new(
-        ws.profiles(),
-        config,
-        build_config.requested_profile,
-        ws.features(),
-    )?;
+    let profiles = Profiles::new(ws, build_config.requested_profile)?;
     profiles.validate_packages(
         ws.profiles(),
         &mut config.shell(),
@@ -427,11 +467,17 @@ pub fn create_bcx<'a, 'cfg>(
         })
         .collect();
 
+    // Passing `build_config.requested_kinds` instead of
+    // `explicit_host_kinds` here so that `generate_targets` can do
+    // its own special handling of `CompileKind::Host`. It will
+    // internally replace the host kind by the `explicit_host_kind`
+    // before setting as a unit.
     let mut units = generate_targets(
         ws,
         &to_builds,
         filter,
-        &explicit_host_kinds,
+        &build_config.requested_kinds,
+        explicit_host_kind,
         build_config.mode,
         &resolve,
         &workspace_resolve,
@@ -482,6 +528,12 @@ pub fn create_bcx<'a, 'cfg>(
         interner,
     )?;
 
+    // TODO: In theory, Cargo should also dedupe the roots, but I'm uncertain
+    // what heuristics to use in that case.
+    if build_config.mode == (CompileMode::Doc { deps: true }) {
+        remove_duplicate_doc(build_config, &units, &mut unit_graph);
+    }
+
     if build_config
         .requested_kinds
         .iter()
@@ -516,7 +568,7 @@ pub fn create_bcx<'a, 'cfg>(
             // the target is a binary. Binary crates get their private items
             // documented by default.
             if rustdoc_document_private_items || unit.target.is_bin() {
-                let mut args = extra_args.take().unwrap_or_else(|| vec![]);
+                let mut args = extra_args.take().unwrap_or_default();
                 args.push("--document-private-items".into());
                 extra_args = Some(args);
             }
@@ -527,6 +579,36 @@ pub fn create_bcx<'a, 'cfg>(
                     .or_default()
                     .extend(args);
             }
+        }
+    }
+
+    if honor_rust_version {
+        // Remove any pre-release identifiers for easier comparison
+        let current_version = &target_data.rustc.version;
+        let untagged_version = semver::Version::new(
+            current_version.major,
+            current_version.minor,
+            current_version.patch,
+        );
+
+        for unit in unit_graph.keys() {
+            let version = match unit.pkg.rust_version() {
+                Some(v) => v,
+                None => continue,
+            };
+
+            let req = semver::VersionReq::parse(version).unwrap();
+            if req.matches(&untagged_version) {
+                continue;
+            }
+
+            anyhow::bail!(
+                "package `{}` cannot be built because it requires rustc {} or newer, \
+                 while the currently active rustc version is {}",
+                unit.pkg,
+                version,
+                current_version,
+            );
         }
     }
 
@@ -575,6 +657,13 @@ impl FilterRule {
         match *self {
             FilterRule::All => None,
             FilterRule::Just(ref targets) => Some(targets.clone()),
+        }
+    }
+
+    pub(crate) fn contains_glob_patterns(&self) -> bool {
+        match self {
+            FilterRule::All => false,
+            FilterRule::Just(targets) => targets.iter().any(is_glob_pattern),
         }
     }
 }
@@ -706,6 +795,34 @@ impl CompileFilter {
             CompileFilter::Only { .. } => true,
         }
     }
+
+    pub fn is_all_targets(&self) -> bool {
+        matches!(
+            *self,
+            CompileFilter::Only {
+                all_targets: true,
+                ..
+            }
+        )
+    }
+
+    pub(crate) fn contains_glob_patterns(&self) -> bool {
+        match self {
+            CompileFilter::Default { .. } => false,
+            CompileFilter::Only {
+                bins,
+                examples,
+                tests,
+                benches,
+                ..
+            } => {
+                bins.contains_glob_patterns()
+                    || examples.contains_glob_patterns()
+                    || tests.contains_glob_patterns()
+                    || benches.contains_glob_patterns()
+            }
+        }
+    }
 }
 
 /// A proposed target.
@@ -731,6 +848,7 @@ fn generate_targets(
     packages: &[&Package],
     filter: &CompileFilter,
     requested_kinds: &[CompileKind],
+    explicit_host_kind: CompileKind,
     mode: CompileMode,
     resolve: &Resolve,
     workspace_resolve: &Option<Resolve>,
@@ -799,19 +917,40 @@ fn generate_targets(
             };
 
             let is_local = pkg.package_id().source_id().is_path();
-            let profile = profiles.get_profile(
-                pkg.package_id(),
-                ws.is_member(pkg),
-                is_local,
-                unit_for,
-                target_mode,
-            );
 
             // No need to worry about build-dependencies, roots are never build dependencies.
             let features_for = FeaturesFor::from_for_host(target.proc_macro());
             let features = resolved_features.activated_features(pkg.package_id(), features_for);
 
-            for kind in requested_kinds {
+            // If `--target` has not been specified, then the unit
+            // graph is built almost like if `--target $HOST` was
+            // specified. See `rebuild_unit_graph_shared` for more on
+            // why this is done. However, if the package has its own
+            // `package.target` key, then this gets used instead of
+            // `$HOST`
+            let explicit_kinds = if let Some(k) = pkg.manifest().forced_kind() {
+                vec![k]
+            } else {
+                requested_kinds
+                    .iter()
+                    .map(|kind| match kind {
+                        CompileKind::Host => {
+                            pkg.manifest().default_kind().unwrap_or(explicit_host_kind)
+                        }
+                        CompileKind::Target(t) => CompileKind::Target(*t),
+                    })
+                    .collect()
+            };
+
+            for kind in explicit_kinds.iter() {
+                let profile = profiles.get_profile(
+                    pkg.package_id(),
+                    ws.is_member(pkg),
+                    is_local,
+                    unit_for,
+                    target_mode,
+                    *kind,
+                );
                 let unit = interner.intern(
                     pkg,
                     target,
@@ -953,6 +1092,9 @@ fn generate_targets(
     // It is computed by the set of enabled features for the package plus
     // every enabled feature of every enabled dependency.
     let mut features_map = HashMap::new();
+    // This needs to be a set to de-duplicate units. Due to the way the
+    // targets are filtered, it is possible to have duplicate proposals for
+    // the same thing.
     let mut units = HashSet::new();
     for Proposal {
         pkg,
@@ -963,8 +1105,9 @@ fn generate_targets(
     {
         let unavailable_features = match target.required_features() {
             Some(rf) => {
-                warn_on_missing_features(
+                validate_required_features(
                     workspace_resolve,
+                    target.name(),
                     rf,
                     pkg.summary(),
                     &mut config.shell(),
@@ -996,11 +1139,71 @@ fn generate_targets(
         }
         // else, silently skip target.
     }
-    Ok(units.into_iter().collect())
+    let mut units: Vec<_> = units.into_iter().collect();
+    unmatched_target_filters(&units, filter, &mut ws.config().shell())?;
+
+    // Keep the roots in a consistent order, which helps with checking test output.
+    units.sort_unstable();
+    Ok(units)
 }
 
-fn warn_on_missing_features(
+/// Checks if the unit list is empty and the user has passed any combination of
+/// --tests, --examples, --benches or --bins, and we didn't match on any targets.
+/// We want to emit a warning to make sure the user knows that this run is a no-op,
+/// and their code remains unchecked despite cargo not returning any errors
+fn unmatched_target_filters(
+    units: &[Unit],
+    filter: &CompileFilter,
+    shell: &mut Shell,
+) -> CargoResult<()> {
+    if let CompileFilter::Only {
+        all_targets,
+        lib: _,
+        ref bins,
+        ref examples,
+        ref tests,
+        ref benches,
+    } = *filter
+    {
+        if units.is_empty() {
+            let mut filters = String::new();
+            let mut miss_count = 0;
+
+            let mut append = |t: &FilterRule, s| {
+                if let FilterRule::All = *t {
+                    miss_count += 1;
+                    filters.push_str(s);
+                }
+            };
+
+            if all_targets {
+                filters.push_str(" `all-targets`");
+            } else {
+                append(bins, " `bins`,");
+                append(tests, " `tests`,");
+                append(examples, " `examples`,");
+                append(benches, " `benches`,");
+                filters.pop();
+            }
+
+            return shell.warn(format!(
+                "Target {}{} specified, but no targets matched. This is a no-op",
+                if miss_count > 1 { "filters" } else { "filter" },
+                filters,
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+/// Warns if a target's required-features references a feature that doesn't exist.
+///
+/// This is a warning because historically this was not validated, and it
+/// would cause too much breakage to make it an error.
+fn validate_required_features(
     resolve: &Option<Resolve>,
+    target_name: &str,
     required_features: &[String],
     summary: &Summary,
     shell: &mut Shell,
@@ -1011,47 +1214,63 @@ fn warn_on_missing_features(
     };
 
     for feature in required_features {
-        match FeatureValue::new(feature.into(), summary) {
-            // No need to do anything here, since the feature must exist to be parsed as such
-            FeatureValue::Feature(_) => {}
-            // Possibly mislabeled feature that was not found
-            FeatureValue::Crate(krate) => {
-                if !summary
-                    .dependencies()
-                    .iter()
-                    .any(|dep| dep.name_in_toml() == krate && dep.is_optional())
-                {
+        let fv = FeatureValue::new(feature.into());
+        match &fv {
+            FeatureValue::Feature(f) => {
+                if !summary.features().contains_key(f) {
                     shell.warn(format!(
-                        "feature `{}` is not present in [features] section.",
-                        krate
+                        "invalid feature `{}` in required-features of target `{}`: \
+                        `{}` is not present in [features] section",
+                        fv, target_name, fv
                     ))?;
                 }
             }
+            FeatureValue::Dep { .. } => {
+                anyhow::bail!(
+                    "invalid feature `{}` in required-features of target `{}`: \
+                    `dep:` prefixed feature values are not allowed in required-features",
+                    fv,
+                    target_name
+                );
+            }
+            FeatureValue::DepFeature { weak: true, .. } => {
+                anyhow::bail!(
+                    "invalid feature `{}` in required-features of target `{}`: \
+                    optional dependency with `?` is not allowed in required-features",
+                    fv,
+                    target_name
+                );
+            }
             // Handling of dependent_crate/dependent_crate_feature syntax
-            FeatureValue::CrateFeature(krate, feature) => {
+            FeatureValue::DepFeature {
+                dep_name,
+                dep_feature,
+                weak: false,
+            } => {
                 match resolve
                     .deps(summary.package_id())
-                    .find(|(_dep_id, deps)| deps.iter().any(|dep| dep.name_in_toml() == krate))
+                    .find(|(_dep_id, deps)| deps.iter().any(|dep| dep.name_in_toml() == *dep_name))
                 {
                     Some((dep_id, _deps)) => {
                         let dep_summary = resolve.summary(dep_id);
-                        if !dep_summary.features().contains_key(&feature)
+                        if !dep_summary.features().contains_key(dep_feature)
                             && !dep_summary
                                 .dependencies()
                                 .iter()
-                                .any(|dep| dep.name_in_toml() == feature && dep.is_optional())
+                                .any(|dep| dep.name_in_toml() == *dep_feature && dep.is_optional())
                         {
                             shell.warn(format!(
-                                "feature `{}` does not exist in package `{}`.",
-                                feature, dep_id
+                                "invalid feature `{}` in required-features of target `{}`: \
+                                feature `{}` does not exist in package `{}`",
+                                fv, target_name, dep_feature, dep_id
                             ))?;
                         }
                     }
                     None => {
                         shell.warn(format!(
-                            "dependency `{}` specified in required-features as `{}/{}` \
-                             does not exist.",
-                            krate, krate, feature
+                            "invalid feature `{}` in required-features of target `{}`: \
+                            dependency `{}` does not exist",
+                            fv, target_name, dep_name
                         ))?;
                     }
                 }
@@ -1163,8 +1382,16 @@ fn find_named_targets<'a>(
     is_expected_kind: fn(&Target) -> bool,
     mode: CompileMode,
 ) -> CargoResult<Vec<Proposal<'a>>> {
-    let filter = |t: &Target| t.name() == target_name && is_expected_kind(t);
-    let proposals = filter_targets(packages, filter, true, mode);
+    let is_glob = is_glob_pattern(target_name);
+    let proposals = if is_glob {
+        let pattern = build_glob(target_name)?;
+        let filter = |t: &Target| is_expected_kind(t) && pattern.matches(t.name());
+        filter_targets(packages, filter, true, mode)
+    } else {
+        let filter = |t: &Target| t.name() == target_name && is_expected_kind(t);
+        filter_targets(packages, filter, true, mode)
+    };
+
     if proposals.is_empty() {
         let targets = packages.iter().flat_map(|pkg| {
             pkg.targets()
@@ -1173,8 +1400,9 @@ fn find_named_targets<'a>(
         });
         let suggestion = closest_msg(target_name, targets, |t| t.name());
         anyhow::bail!(
-            "no {} target named `{}`{}",
+            "no {} target {} `{}`{}",
             target_desc,
+            if is_glob { "matches pattern" } else { "named" },
             target_name,
             suggestion
         );
@@ -1290,4 +1518,208 @@ fn traverse_and_share(
     assert!(memo.insert(unit.clone(), new_unit.clone()).is_none());
     new_graph.entry(new_unit.clone()).or_insert(new_deps);
     new_unit
+}
+
+/// Build `glob::Pattern` with informative context.
+fn build_glob(pat: &str) -> CargoResult<glob::Pattern> {
+    glob::Pattern::new(pat).with_context(|| format!("cannot build glob pattern from `{}`", pat))
+}
+
+/// Emits "package not found" error.
+///
+/// > This function should be used only in package selection processes such like
+/// `Packages::to_package_id_specs` and `Packages::get_packages`.
+fn emit_package_not_found(
+    ws: &Workspace<'_>,
+    opt_names: BTreeSet<&str>,
+    opt_out: bool,
+) -> CargoResult<()> {
+    if !opt_names.is_empty() {
+        anyhow::bail!(
+            "{}package(s) `{}` not found in workspace `{}`",
+            if opt_out { "excluded " } else { "" },
+            opt_names.into_iter().collect::<Vec<_>>().join(", "),
+            ws.root().display(),
+        )
+    }
+    Ok(())
+}
+
+/// Emits "glob pattern not found" error.
+///
+/// > This function should be used only in package selection processes such like
+/// `Packages::to_package_id_specs` and `Packages::get_packages`.
+fn emit_pattern_not_found(
+    ws: &Workspace<'_>,
+    opt_patterns: Vec<(glob::Pattern, bool)>,
+    opt_out: bool,
+) -> CargoResult<()> {
+    let not_matched = opt_patterns
+        .iter()
+        .filter(|(_, matched)| !*matched)
+        .map(|(pat, _)| pat.as_str())
+        .collect::<Vec<_>>();
+    if !not_matched.is_empty() {
+        anyhow::bail!(
+            "{}package pattern(s) `{}` not found in workspace `{}`",
+            if opt_out { "excluded " } else { "" },
+            not_matched.join(", "),
+            ws.root().display(),
+        )
+    }
+    Ok(())
+}
+
+/// Checks whether a package matches any of a list of glob patterns generated
+/// from `opt_patterns_and_names`.
+///
+/// > This function should be used only in package selection processes such like
+/// `Packages::to_package_id_specs` and `Packages::get_packages`.
+fn match_patterns(pkg: &Package, patterns: &mut Vec<(glob::Pattern, bool)>) -> bool {
+    patterns.iter_mut().any(|(m, matched)| {
+        let is_matched = m.matches(pkg.name().as_str());
+        *matched |= is_matched;
+        is_matched
+    })
+}
+
+/// Given a list opt-in or opt-out package selection strings, generates two
+/// collections that represent glob patterns and package names respectively.
+///
+/// > This function should be used only in package selection processes such like
+/// `Packages::to_package_id_specs` and `Packages::get_packages`.
+fn opt_patterns_and_names(
+    opt: &[String],
+) -> CargoResult<(Vec<(glob::Pattern, bool)>, BTreeSet<&str>)> {
+    let mut opt_patterns = Vec::new();
+    let mut opt_names = BTreeSet::new();
+    for x in opt.iter() {
+        if is_glob_pattern(x) {
+            opt_patterns.push((build_glob(x)?, false));
+        } else {
+            opt_names.insert(String::as_str(x));
+        }
+    }
+    Ok((opt_patterns, opt_names))
+}
+
+/// Removes duplicate CompileMode::Doc units that would cause problems with
+/// filename collisions.
+///
+/// Rustdoc only separates units by crate name in the file directory
+/// structure. If any two units with the same crate name exist, this would
+/// cause a filename collision, causing different rustdoc invocations to stomp
+/// on one another's files.
+///
+/// Unfortunately this does not remove all duplicates, as some of them are
+/// either user error, or difficult to remove. Cases that I can think of:
+///
+/// - Same target name in different packages. See the `collision_doc` test.
+/// - Different sources. See `collision_doc_sources` test.
+///
+/// Ideally this would not be necessary.
+fn remove_duplicate_doc(
+    build_config: &BuildConfig,
+    root_units: &[Unit],
+    unit_graph: &mut UnitGraph,
+) {
+    // First, create a mapping of crate_name -> Unit so we can see where the
+    // duplicates are.
+    let mut all_docs: HashMap<String, Vec<Unit>> = HashMap::new();
+    for unit in unit_graph.keys() {
+        if unit.mode.is_doc() {
+            all_docs
+                .entry(unit.target.crate_name())
+                .or_default()
+                .push(unit.clone());
+        }
+    }
+    // Keep track of units to remove so that they can be efficiently removed
+    // from the unit_deps.
+    let mut removed_units: HashSet<Unit> = HashSet::new();
+    let mut remove = |units: Vec<Unit>, reason: &str, cb: &dyn Fn(&Unit) -> bool| -> Vec<Unit> {
+        let (to_remove, remaining_units): (Vec<Unit>, Vec<Unit>) = units
+            .into_iter()
+            .partition(|unit| cb(unit) && !root_units.contains(unit));
+        for unit in to_remove {
+            log::debug!(
+                "removing duplicate doc due to {} for package {} target `{}`",
+                reason,
+                unit.pkg,
+                unit.target.name()
+            );
+            unit_graph.remove(&unit);
+            removed_units.insert(unit);
+        }
+        remaining_units
+    };
+    // Iterate over the duplicates and try to remove them from unit_graph.
+    for (_crate_name, mut units) in all_docs {
+        if units.len() == 1 {
+            continue;
+        }
+        // Prefer target over host if --target was not specified.
+        if build_config
+            .requested_kinds
+            .iter()
+            .all(CompileKind::is_host)
+        {
+            // Note these duplicates may not be real duplicates, since they
+            // might get merged in rebuild_unit_graph_shared. Either way, it
+            // shouldn't hurt to remove them early (although the report in the
+            // log might be confusing).
+            units = remove(units, "host/target merger", &|unit| unit.kind.is_host());
+            if units.len() == 1 {
+                continue;
+            }
+        }
+        // Prefer newer versions over older.
+        let mut source_map: HashMap<(InternedString, SourceId, CompileKind), Vec<Unit>> =
+            HashMap::new();
+        for unit in units {
+            let pkg_id = unit.pkg.package_id();
+            // Note, this does not detect duplicates from different sources.
+            source_map
+                .entry((pkg_id.name(), pkg_id.source_id(), unit.kind))
+                .or_default()
+                .push(unit);
+        }
+        let mut remaining_units = Vec::new();
+        for (_key, mut units) in source_map {
+            if units.len() > 1 {
+                units.sort_by(|a, b| a.pkg.version().partial_cmp(b.pkg.version()).unwrap());
+                // Remove any entries with version < newest.
+                let newest_version = units.last().unwrap().pkg.version().clone();
+                let keep_units = remove(units, "older version", &|unit| {
+                    unit.pkg.version() < &newest_version
+                });
+                remaining_units.extend(keep_units);
+            } else {
+                remaining_units.extend(units);
+            }
+        }
+        if remaining_units.len() == 1 {
+            continue;
+        }
+        // Are there other heuristics to remove duplicates that would make
+        // sense? Maybe prefer path sources over all others?
+    }
+    // Also remove units from the unit_deps so there aren't any dangling edges.
+    for unit_deps in unit_graph.values_mut() {
+        unit_deps.retain(|unit_dep| !removed_units.contains(&unit_dep.unit));
+    }
+    // Remove any orphan units that were detached from the graph.
+    let mut visited = HashSet::new();
+    fn visit(unit: &Unit, graph: &UnitGraph, visited: &mut HashSet<Unit>) {
+        if !visited.insert(unit.clone()) {
+            return;
+        }
+        for dep in &graph[unit] {
+            visit(&dep.unit, graph, visited);
+        }
+    }
+    for unit in root_units {
+        visit(unit, unit_graph, &mut visited);
+    }
+    unit_graph.retain(|unit, _| visited.contains(unit));
 }

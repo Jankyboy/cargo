@@ -5,7 +5,7 @@ use std::io::prelude::*;
 
 use cargo_test_support::cross_compile;
 use cargo_test_support::git;
-use cargo_test_support::registry::{registry_path, registry_url, Package};
+use cargo_test_support::registry::{self, registry_path, registry_url, Package};
 use cargo_test_support::{
     basic_manifest, cargo_process, no_such_file_err_msg, project, symlink_supported, t,
 };
@@ -13,7 +13,9 @@ use cargo_test_support::{
 use cargo_test_support::install::{
     assert_has_installed_exe, assert_has_not_installed_exe, cargo_home,
 };
-use cargo_test_support::paths;
+use cargo_test_support::paths::{self, CargoPathExt};
+use std::env;
+use std::path::PathBuf;
 
 fn pkg(name: &str, vers: &str) {
     Package::new(name, vers)
@@ -108,6 +110,65 @@ fn multiple_pkgs() {
 [ERROR] could not find `baz` in registry `[..]` with version `*`
 [SUMMARY] Successfully installed foo, bar! Failed to install baz (see error(s) above).
 [WARNING] be sure to add `[..]` to your PATH to be able to run the installed binaries
+[ERROR] some crates failed to install
+",
+        )
+        .run();
+    assert_has_installed_exe(cargo_home(), "foo");
+    assert_has_installed_exe(cargo_home(), "bar");
+
+    cargo_process("uninstall foo bar")
+        .with_stderr(
+            "\
+[REMOVING] [CWD]/home/.cargo/bin/foo[EXE]
+[REMOVING] [CWD]/home/.cargo/bin/bar[EXE]
+[SUMMARY] Successfully uninstalled foo, bar!
+",
+        )
+        .run();
+
+    assert_has_not_installed_exe(cargo_home(), "foo");
+    assert_has_not_installed_exe(cargo_home(), "bar");
+}
+
+fn path() -> Vec<PathBuf> {
+    env::split_paths(&env::var_os("PATH").unwrap_or_default()).collect()
+}
+
+#[cargo_test]
+fn multiple_pkgs_path_set() {
+    // confirm partial failure results in 101 status code and does not have the
+    //      '[WARNING] be sure to add `[..]` to your PATH to be able to run the installed binaries'
+    //  even if CARGO_HOME/bin is in the PATH
+    pkg("foo", "0.0.1");
+    pkg("bar", "0.0.2");
+
+    // add CARGO_HOME/bin to path
+    let mut path = path();
+    path.push(cargo_home().join("bin"));
+    let new_path = env::join_paths(path).unwrap();
+    cargo_process("install foo bar baz")
+        .env("PATH", new_path)
+        .with_status(101)
+        .with_stderr(
+            "\
+[UPDATING] `[..]` index
+[DOWNLOADING] crates ...
+[DOWNLOADED] foo v0.0.1 (registry `[CWD]/registry`)
+[INSTALLING] foo v0.0.1
+[COMPILING] foo v0.0.1
+[FINISHED] release [optimized] target(s) in [..]
+[INSTALLING] [CWD]/home/.cargo/bin/foo[EXE]
+[INSTALLED] package `foo v0.0.1` (executable `foo[EXE]`)
+[DOWNLOADING] crates ...
+[DOWNLOADED] bar v0.0.2 (registry `[CWD]/registry`)
+[INSTALLING] bar v0.0.2
+[COMPILING] bar v0.0.2
+[FINISHED] release [optimized] target(s) in [..]
+[INSTALLING] [CWD]/home/.cargo/bin/bar[EXE]
+[INSTALLED] package `bar v0.0.2` (executable `bar[EXE]`)
+[ERROR] could not find `baz` in registry `[..]` with version `*`
+[SUMMARY] Successfully installed foo, bar! Failed to install baz (see error(s) above).
 [ERROR] some crates failed to install
 ",
         )
@@ -339,6 +400,23 @@ fn install_target_dir() {
 }
 
 #[cargo_test]
+#[cfg(target_os = "linux")]
+fn install_path_with_lowercase_cargo_toml() {
+    let toml = paths::root().join("cargo.toml");
+    fs::write(toml, "").unwrap();
+
+    cargo_process("install --path .")
+        .with_status(101)
+        .with_stderr(
+            "\
+[ERROR] `[CWD]` does not contain a Cargo.toml file, \
+but found cargo.toml please try to rename it to Cargo.toml. --path must point to a directory containing a Cargo.toml file.
+",
+        )
+        .run();
+}
+
+#[cargo_test]
 fn multiple_crates_error() {
     let p = git::repo(&paths::root().join("foo"))
         .file("Cargo.toml", &basic_manifest("foo", "0.1.0"))
@@ -353,7 +431,9 @@ fn multiple_crates_error() {
         .with_stderr(
             "\
 [UPDATING] git repository [..]
-[ERROR] multiple packages with binaries found: bar, foo
+[ERROR] multiple packages with binaries found: bar, foo. \
+When installing a git repository, cargo will always search the entire repo for any Cargo.toml. \
+Please specify which to install.
 ",
         )
         .run();
@@ -506,8 +586,9 @@ fn no_binaries() {
         .with_status(101)
         .with_stderr(
             "\
-[ERROR] specified package `foo v0.0.1 ([..])` has no binaries
-",
+[ERROR] there is nothing to install in `foo v0.0.1 ([..])`, because it has no binaries[..]
+[..]
+[..]",
         )
         .run();
 }
@@ -661,9 +742,7 @@ fn compile_failure() {
     found at `[..]target`
 
 Caused by:
-  could not compile `foo`
-
-To learn more, run the command again with --verbose.
+  could not compile `foo` due to previous error
 ",
         )
         .run();
@@ -682,6 +761,7 @@ fn git_repo() {
         .with_stderr(
             "\
 [UPDATING] git repository `[..]`
+[WARNING] no Cargo.lock file published in foo v0.1.0 ([..])
 [INSTALLING] foo v0.1.0 ([..])
 [COMPILING] foo v0.1.0 ([..])
 [FINISHED] release [optimized] target(s) in [..]
@@ -693,6 +773,26 @@ fn git_repo() {
         .run();
     assert_has_installed_exe(cargo_home(), "foo");
     assert_has_installed_exe(cargo_home(), "foo");
+}
+
+#[cargo_test]
+#[cfg(target_os = "linux")]
+fn git_repo_with_lowercase_cargo_toml() {
+    let p = git::repo(&paths::root().join("foo"))
+        .file("cargo.toml", &basic_manifest("foo", "0.1.0"))
+        .file("src/main.rs", "fn main() {}")
+        .build();
+
+    cargo_process("install --git")
+        .arg(p.url().to_string())
+        .with_status(101)
+        .with_stderr(
+            "\
+[UPDATING] git repository [..]
+[ERROR] Could not find Cargo.toml in `[..]`, but found cargo.toml please try to rename it to Cargo.toml
+",
+        )
+        .run();
 }
 
 #[cargo_test]
@@ -757,7 +857,7 @@ Caused by:
 fn uninstall_pkg_does_not_exist() {
     cargo_process("uninstall foo")
         .with_status(101)
-        .with_stderr("[ERROR] package ID specification `foo` matched no packages")
+        .with_stderr("[ERROR] package ID specification `foo` did not match any packages")
         .run();
 }
 
@@ -797,7 +897,7 @@ fn uninstall_piecemeal() {
 
     cargo_process("uninstall foo")
         .with_status(101)
-        .with_stderr("[ERROR] package ID specification `foo` matched no packages")
+        .with_stderr("[ERROR] package ID specification `foo` did not match any packages")
         .run();
 }
 
@@ -1182,6 +1282,19 @@ fn uninstall_multiple_and_specifying_bin() {
 }
 
 #[cargo_test]
+fn uninstall_with_empty_pakcage_option() {
+    cargo_process("uninstall -p")
+        .with_status(101)
+        .with_stderr(
+            "\
+[ERROR] \"--package <SPEC>\" requires a SPEC format value.
+Run `cargo help pkgid` for more information about SPEC format.
+",
+        )
+        .run();
+}
+
+#[cargo_test]
 fn uninstall_multiple_and_some_pkg_does_not_exist() {
     pkg("foo", "0.0.1");
 
@@ -1192,7 +1305,7 @@ fn uninstall_multiple_and_some_pkg_does_not_exist() {
         .with_stderr(
             "\
 [REMOVING] [CWD]/home/.cargo/bin/foo[EXE]
-error: package ID specification `bar` matched no packages
+error: package ID specification `bar` did not match any packages
 [SUMMARY] Successfully uninstalled foo! Failed to uninstall bar (see error(s) above).
 error: some packages failed to uninstall
 ",
@@ -1651,4 +1764,72 @@ workspace: [..]/foo/Cargo.toml
         )
         .run();
     assert_has_installed_exe(cargo_home(), "foo");
+}
+
+#[cargo_test]
+fn locked_install_without_published_lockfile() {
+    Package::new("foo", "0.1.0")
+        .file("src/main.rs", "//! Some docs\nfn main() {}")
+        .publish();
+
+    cargo_process("install foo --locked")
+        .with_stderr_contains("[WARNING] no Cargo.lock file published in foo v0.1.0")
+        .run();
+}
+
+#[cargo_test]
+fn install_semver_metadata() {
+    // Check trying to install a package that uses semver metadata.
+    // This uses alt registry because the bug this is exercising doesn't
+    // trigger with a replaced source.
+    registry::alt_init();
+    Package::new("foo", "1.0.0+abc")
+        .alternative(true)
+        .file("src/main.rs", "fn main() {}")
+        .publish();
+
+    cargo_process("install foo --registry alternative --version 1.0.0+abc").run();
+    cargo_process("install foo --registry alternative")
+        .with_stderr("\
+[UPDATING] `[ROOT]/alternative-registry` index
+[IGNORED] package `foo v1.0.0+abc (registry `[ROOT]/alternative-registry`)` is already installed, use --force to override
+[WARNING] be sure to add [..]
+")
+        .run();
+    // "Updating" is not displayed here due to the --version fast-path.
+    cargo_process("install foo --registry alternative --version 1.0.0+abc")
+        .with_stderr("\
+[IGNORED] package `foo v1.0.0+abc (registry `[ROOT]/alternative-registry`)` is already installed, use --force to override
+[WARNING] be sure to add [..]
+")
+        .run();
+    cargo_process("install foo --registry alternative --version 1.0.0 --force")
+        .with_stderr(
+            "\
+[UPDATING] `[ROOT]/alternative-registry` index
+[INSTALLING] foo v1.0.0+abc (registry `[ROOT]/alternative-registry`)
+[COMPILING] foo v1.0.0+abc (registry `[ROOT]/alternative-registry`)
+[FINISHED] [..]
+[REPLACING] [ROOT]/home/.cargo/bin/foo[EXE]
+[REPLACED] package [..]
+[WARNING] be sure to add [..]
+",
+        )
+        .run();
+    // Check that from a fresh cache will work without metadata, too.
+    paths::home().join(".cargo/registry").rm_rf();
+    paths::home().join(".cargo/bin").rm_rf();
+    cargo_process("install foo --registry alternative --version 1.0.0")
+        .with_stderr("\
+[UPDATING] `[ROOT]/alternative-registry` index
+[DOWNLOADING] crates ...
+[DOWNLOADED] foo v1.0.0+abc (registry `[ROOT]/alternative-registry`)
+[INSTALLING] foo v1.0.0+abc (registry `[ROOT]/alternative-registry`)
+[COMPILING] foo v1.0.0+abc (registry `[ROOT]/alternative-registry`)
+[FINISHED] [..]
+[INSTALLING] [ROOT]/home/.cargo/bin/foo[EXE]
+[INSTALLED] package `foo v1.0.0+abc (registry `[ROOT]/alternative-registry`)` (executable `foo[EXE]`)
+[WARNING] be sure to add [..]
+")
+        .run();
 }

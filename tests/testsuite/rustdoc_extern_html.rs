@@ -1,6 +1,6 @@
 //! Tests for the -Zrustdoc-map feature.
 
-use cargo_test_support::registry::Package;
+use cargo_test_support::registry::{self, Package};
 use cargo_test_support::{is_nightly, paths, project, Project};
 
 fn basic_project() -> Project {
@@ -32,21 +32,10 @@ fn basic_project() -> Project {
         .build()
 }
 
-fn docs_rs(p: &Project) {
-    p.change_file(
-        ".cargo/config",
-        r#"
-            [doc.extern-map.registries]
-            crates-io = "https://docs.rs/"
-        "#,
-    );
-}
-
 #[cargo_test]
 fn ignores_on_stable() {
     // Requires -Zrustdoc-map to use.
     let p = basic_project();
-    docs_rs(&p);
     p.cargo("doc -v --no-deps")
         .with_stderr_does_not_contain("[..]--extern-html-root-url[..]")
         .run();
@@ -60,7 +49,6 @@ fn simple() {
         return;
     }
     let p = basic_project();
-    docs_rs(&p);
     p.cargo("doc -v --no-deps -Zrustdoc-map")
         .masquerade_as_nightly_cargo()
         .with_stderr_contains(
@@ -81,7 +69,7 @@ fn std_docs() {
     // For local developers, skip this test if docs aren't installed.
     let docs = std::path::Path::new(&paths::sysroot()).join("share/doc/rust/html");
     if !docs.exists() {
-        if cargo::util::is_ci() {
+        if cargo_util::is_ci() {
             panic!("std docs are not installed, check that the rust-docs component is installed");
         } else {
             eprintln!(
@@ -157,7 +145,6 @@ fn renamed_dep() {
             "#,
         )
         .build();
-    docs_rs(&p);
     p.cargo("doc -v --no-deps -Zrustdoc-map")
         .masquerade_as_nightly_cargo()
         .with_stderr_contains(
@@ -211,7 +198,6 @@ fn lib_name() {
             "#,
         )
         .build();
-    docs_rs(&p);
     p.cargo("doc -v --no-deps -Zrustdoc-map")
         .masquerade_as_nightly_cargo()
         .with_stderr_contains(
@@ -229,6 +215,7 @@ fn alt_registry() {
         // --extern-html-root-url is unstable
         return;
     }
+    registry::alt_init();
     Package::new("bar", "1.0.0")
         .alternative(true)
         .file(
@@ -338,7 +325,6 @@ fn multiple_versions() {
             ",
         )
         .build();
-    docs_rs(&p);
     p.cargo("doc -v --no-deps -Zrustdoc-map")
         .masquerade_as_nightly_cargo()
         .with_stderr_contains(
@@ -364,12 +350,21 @@ fn rebuilds_when_changing() {
     let p = basic_project();
     p.cargo("doc -v --no-deps -Zrustdoc-map")
         .masquerade_as_nightly_cargo()
-        .with_stderr_does_not_contain("[..]--extern-html-root-url[..]")
+        .with_stderr_contains("[..]--extern-html-root-url[..]")
         .run();
 
-    docs_rs(&p);
+    // This also tests that the map for docs.rs can be overridden.
+    p.change_file(
+        ".cargo/config",
+        r#"
+            [doc.extern-map.registries]
+            crates-io = "https://example.com/"
+        "#,
+    );
     p.cargo("doc -v --no-deps -Zrustdoc-map")
         .masquerade_as_nightly_cargo()
-        .with_stderr_contains("[..]--extern-html-root-url[..]")
+        .with_stderr_contains(
+            "[RUNNING] `rustdoc [..]--extern-html-root-url [..]bar=https://example.com/bar/1.0.0/[..]",
+        )
         .run();
 }

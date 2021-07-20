@@ -26,11 +26,10 @@ use std::collections::{BTreeSet, HashSet};
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 
-use log::debug;
-
 use super::{fingerprint, Context, FileFlavor, Unit};
-use crate::util::paths;
 use crate::util::{internal, CargoResult};
+use cargo_util::paths;
+use log::debug;
 
 fn render_filename<P: AsRef<Path>>(path: P, basedir: Option<&str>) -> CargoResult<String> {
     let path = path.as_ref();
@@ -79,14 +78,12 @@ fn add_deps_for_unit(
     }
 
     // Add rerun-if-changed dependencies
-    if let Some(metadata) = cx.find_build_script_metadata(unit.clone()) {
-        if let Some(output) = cx
-            .build_script_outputs
-            .lock()
-            .unwrap()
-            .get(unit.pkg.package_id(), metadata)
-        {
+    if let Some(metadata) = cx.find_build_script_metadata(unit) {
+        if let Some(output) = cx.build_script_outputs.lock().unwrap().get(metadata) {
             for path in &output.rerun_if_changed {
+                // The paths we have saved from the unit are of arbitrary relativeness and may be
+                // relative to the crate root of the dependency.
+                let path = unit.pkg.root().join(path);
                 deps.insert(path.into());
             }
         }
@@ -95,7 +92,7 @@ fn add_deps_for_unit(
     // Recursively traverse all transitive dependencies
     let unit_deps = Vec::from(cx.unit_deps(unit)); // Create vec due to mutable borrow.
     for dep in unit_deps {
-        if unit.is_local() {
+        if dep.unit.is_local() {
             add_deps_for_unit(deps, cx, &dep.unit, visited)?;
         }
     }

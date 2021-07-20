@@ -236,7 +236,7 @@ unable to verify that `{0}` is the same as when the lockfile was generated
         self.graph.sort()
     }
 
-    pub fn iter<'a>(&'a self) -> impl Iterator<Item = PackageId> + 'a {
+    pub fn iter(&self) -> impl Iterator<Item = PackageId> + '_ {
         self.graph.iter().cloned()
     }
 
@@ -409,6 +409,6 @@ impl Default for ResolveVersion {
     /// file anyway so it takes the opportunity to bump the lock file version
     /// forward.
     fn default() -> ResolveVersion {
-        ResolveVersion::V2
+        ResolveVersion::V3
     }
 }

@@ -1301,7 +1301,7 @@ fn dev_deps_with_testing() {
 [COMPILING] [..] v0.5.0 ([..])
 [COMPILING] [..] v0.5.0 ([..]
 [FINISHED] test [unoptimized + debuginfo] target(s) in [..]
-[RUNNING] target/debug/deps/foo-[..][EXE]",
+[RUNNING] [..] (target/debug/deps/foo-[..][EXE])",
         )
         .with_stdout_contains("test tests::foo ... ok")
         .run();
@@ -2760,7 +2760,7 @@ to proceed despite [..]
     git::commit(&repo);
     git_project.cargo("package --no-verify").run();
     // Modify within nested submodule.
-    git_project.change_file("src/bar/mod.rs", "//test");
+    git_project.change_file("src/bar/new_file.rs", "//test");
     git_project
         .cargo("package --no-verify")
         .with_status(101)
@@ -2770,7 +2770,7 @@ to proceed despite [..]
 See [..]
 [ERROR] 1 files in the working directory contain changes that were not yet committed into git:
 
-src/bar/mod.rs
+src/bar/new_file.rs
 
 to proceed despite [..]
 ",
@@ -2805,7 +2805,7 @@ fn default_not_master() {
 
     // Then create a commit on the new `main` branch so `master` and `main`
     // differ.
-    git_project.change_file("src/lib.rs", "");
+    git_project.change_file("src/lib.rs", "pub fn bar() {}");
     git::add(&repo);
     git::commit(&repo);
 
@@ -2817,14 +2817,13 @@ fn default_not_master() {
                     [project]
                     name = "foo"
                     version = "0.5.0"
-
                     [dependencies]
                     dep1 = {{ git = '{}' }}
                 "#,
                 git_project.url()
             ),
         )
-        .file("src/lib.rs", "pub fn foo() { dep1::foo() }")
+        .file("src/lib.rs", "pub fn foo() { dep1::bar() }")
         .build();
 
     project
@@ -2832,14 +2831,6 @@ fn default_not_master() {
         .with_stderr(
             "\
 [UPDATING] git repository `[..]`
-warning: fetching `master` branch from `[..]` but the `HEAD` \
-    reference for this repository is not the \
-    `master` branch. This behavior will change \
-    in Cargo in the future and your build may \
-    break, so it's recommended to place \
-    `branch = \"master\"` in Cargo.toml when \
-    depending on this git repository to ensure \
-    that your build will continue to work.
 [COMPILING] dep1 v0.5.0 ([..])
 [COMPILING] foo v0.5.0 ([..])
 [FINISHED] dev [unoptimized + debuginfo] target(s) in [..]",
@@ -2977,7 +2968,6 @@ fn two_dep_forms() {
                     [project]
                     name = "foo"
                     version = "0.5.0"
-
                     [dependencies]
                     dep1 = {{ git = '{}', branch = 'master' }}
                     a = {{ path = 'a' }}
@@ -2993,7 +2983,6 @@ fn two_dep_forms() {
                     [project]
                     name = "a"
                     version = "0.5.0"
-
                     [dependencies]
                     dep1 = {{ git = '{}' }}
                 "#,
@@ -3003,15 +2992,16 @@ fn two_dep_forms() {
         .file("a/src/lib.rs", "")
         .build();
 
+    // This'll download the git repository twice, one with HEAD and once with
+    // the master branch. Then it'll compile 4 crates, the 2 git deps, then
+    // the two local deps.
     project
         .cargo("build")
         .with_stderr(
             "\
 [UPDATING] [..]
-warning: two git dependencies found for `[..]` where one uses `branch = \"master\"` \
-and the other doesn't; this will break in a future version of Cargo, so please \
-ensure the dependency forms are consistent
-warning: [..]
+[UPDATING] [..]
+[COMPILING] [..]
 [COMPILING] [..]
 [COMPILING] [..]
 [COMPILING] [..]
@@ -3019,4 +3009,212 @@ warning: [..]
 ",
         )
         .run();
+}
+
+#[cargo_test]
+fn metadata_master_consistency() {
+    // SourceId consistency in the `cargo metadata` output when `master` is
+    // explicit or implicit, using new or old Cargo.lock.
+    let (git_project, git_repo) = git::new_repo("bar", |project| {
+        project
+            .file("Cargo.toml", &basic_manifest("bar", "1.0.0"))
+            .file("src/lib.rs", "")
+    });
+    let bar_hash = git_repo.head().unwrap().target().unwrap().to_string();
+
+    // Explicit branch="master" with a lock file created before 1.47 (does not contain ?branch=master).
+    let p = project()
+        .file(
+            "Cargo.toml",
+            &format!(
+                r#"
+                [package]
+                name = "foo"
+                version = "0.1.0"
+
+                [dependencies]
+                bar = {{ git = "{}", branch = "master" }}
+            "#,
+                git_project.url()
+            ),
+        )
+        .file(
+            "Cargo.lock",
+            &format!(
+                r#"
+                    [[package]]
+                    name = "bar"
+                    version = "1.0.0"
+                    source = "git+{}#{}"
+
+                    [[package]]
+                    name = "foo"
+                    version = "0.1.0"
+                    dependencies = [
+                     "bar",
+                    ]
+                "#,
+                git_project.url(),
+                bar_hash,
+            ),
+        )
+        .file("src/lib.rs", "")
+        .build();
+
+    let metadata = |bar_source| -> String {
+        r#"
+            {
+              "packages": [
+                {
+                  "name": "bar",
+                  "version": "1.0.0",
+                  "id": "bar 1.0.0 (__BAR_SOURCE__#__BAR_HASH__)",
+                  "license": null,
+                  "license_file": null,
+                  "description": null,
+                  "source": "__BAR_SOURCE__#__BAR_HASH__",
+                  "dependencies": [],
+                  "targets": "{...}",
+                  "features": {},
+                  "manifest_path": "[..]",
+                  "metadata": null,
+                  "publish": null,
+                  "authors": [],
+                  "categories": [],
+                  "default_run": null,
+                  "keywords": [],
+                  "readme": null,
+                  "repository": null,
+                  "homepage": null,
+                  "documentation": null,
+                  "edition": "2015",
+                  "links": null
+                },
+                {
+                  "name": "foo",
+                  "version": "0.1.0",
+                  "id": "foo 0.1.0 [..]",
+                  "license": null,
+                  "license_file": null,
+                  "description": null,
+                  "source": null,
+                  "dependencies": [
+                    {
+                      "name": "bar",
+                      "source": "__BAR_SOURCE__",
+                      "req": "*",
+                      "kind": null,
+                      "rename": null,
+                      "optional": false,
+                      "uses_default_features": true,
+                      "features": [],
+                      "target": null,
+                      "registry": null
+                    }
+                  ],
+                  "targets": "{...}",
+                  "features": {},
+                  "manifest_path": "[..]",
+                  "metadata": null,
+                  "publish": null,
+                  "authors": [],
+                  "categories": [],
+                  "default_run": null,
+                  "keywords": [],
+                  "readme": null,
+                  "repository": null,
+                  "homepage": null,
+                  "documentation": null,
+                  "edition": "2015",
+                  "links": null
+                }
+              ],
+              "workspace_members": [
+                "foo 0.1.0 [..]"
+              ],
+              "resolve": {
+                "nodes": [
+                  {
+                    "id": "bar 1.0.0 (__BAR_SOURCE__#__BAR_HASH__)",
+                    "dependencies": [],
+                    "deps": [],
+                    "features": []
+                  },
+                  {
+                    "id": "foo 0.1.0 [..]",
+                    "dependencies": [
+                      "bar 1.0.0 (__BAR_SOURCE__#__BAR_HASH__)"
+                    ],
+                    "deps": [
+                      {
+                        "name": "bar",
+                        "pkg": "bar 1.0.0 (__BAR_SOURCE__#__BAR_HASH__)",
+                        "dep_kinds": [
+                          {
+                            "kind": null,
+                            "target": null
+                          }
+                        ]
+                      }
+                    ],
+                    "features": []
+                  }
+                ],
+                "root": "foo 0.1.0 [..]"
+              },
+              "target_directory": "[..]",
+              "version": 1,
+              "workspace_root": "[..]",
+              "metadata": null
+            }
+        "#
+        .replace("__BAR_SOURCE__", bar_source)
+        .replace("__BAR_HASH__", &bar_hash)
+    };
+
+    let bar_source = format!("git+{}?branch=master", git_project.url());
+    p.cargo("metadata").with_json(&metadata(&bar_source)).run();
+
+    // Conversely, remove branch="master" from Cargo.toml, but use a new Cargo.lock that has ?branch=master.
+    let p = project()
+        .file(
+            "Cargo.toml",
+            &format!(
+                r#"
+                [package]
+                name = "foo"
+                version = "0.1.0"
+
+                [dependencies]
+                bar = {{ git = "{}" }}
+            "#,
+                git_project.url()
+            ),
+        )
+        .file(
+            "Cargo.lock",
+            &format!(
+                r#"
+                    [[package]]
+                    name = "bar"
+                    version = "1.0.0"
+                    source = "git+{}?branch=master#{}"
+
+                    [[package]]
+                    name = "foo"
+                    version = "0.1.0"
+                    dependencies = [
+                     "bar",
+                    ]
+                "#,
+                git_project.url(),
+                bar_hash
+            ),
+        )
+        .file("src/lib.rs", "")
+        .build();
+
+    // No ?branch=master!
+    let bar_source = format!("git+{}", git_project.url());
+    p.cargo("metadata").with_json(&metadata(&bar_source)).run();
 }

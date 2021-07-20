@@ -42,17 +42,6 @@ pub fn cli() -> App {
                 .help("Fix in preparation for the next edition"),
         )
         .arg(
-            // This is a deprecated argument, we'll want to phase it out
-            // eventually.
-            Arg::with_name("prepare-for")
-                .long("prepare-for")
-                .help("Fix warnings in preparation of an edition upgrade")
-                .takes_value(true)
-                .possible_values(&["2018"])
-                .conflicts_with("edition")
-                .hidden(true),
-        )
-        .arg(
             Arg::with_name("idioms")
                 .long("edition-idioms")
                 .help("Fix warnings to migrate to the idioms of an edition"),
@@ -72,28 +61,20 @@ pub fn cli() -> App {
                 .long("allow-staged")
                 .help("Fix code even if the working directory has staged changes"),
         )
+        .arg_ignore_rust_version()
         .after_help("Run `cargo help fix` for more detailed information.\n")
 }
 
 pub fn exec(config: &mut Config, args: &ArgMatches<'_>) -> CliResult {
     let ws = args.workspace(config)?;
-    let test = match args.value_of("profile") {
-        Some("test") => true,
-        None => false,
-        Some(profile) => {
-            let err = anyhow::format_err!(
-                "unknown profile: `{}`, only `test` is \
-                 currently supported",
-                profile
-            );
-            return Err(CliError::new(err, 101));
-        }
-    };
+    // This is a legacy behavior that causes `cargo fix` to pass `--test`.
+    let test = matches!(args.value_of("profile"), Some("test"));
     let mode = CompileMode::Check { test };
 
     // Unlike other commands default `cargo fix` to all targets to fix as much
     // code as we can.
-    let mut opts = args.compile_options(config, mode, Some(&ws), ProfileChecking::Unchecked)?;
+    let mut opts =
+        args.compile_options(config, mode, Some(&ws), ProfileChecking::LegacyTestOnly)?;
 
     if let CompileFilter::Default { .. } = opts.filter {
         opts.filter = CompileFilter::Only {
@@ -110,7 +91,6 @@ pub fn exec(config: &mut Config, args: &ArgMatches<'_>) -> CliResult {
         &ws,
         &mut ops::FixOptions {
             edition: args.is_present("edition"),
-            prepare_for: args.value_of("prepare-for"),
             idioms: args.is_present("idioms"),
             compile_opts: opts,
             allow_dirty: args.is_present("allow-dirty"),

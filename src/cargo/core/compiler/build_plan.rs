@@ -7,14 +7,15 @@
 //! dependencies on other Invocations.
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 
 use super::context::OutputFile;
 use super::{CompileKind, CompileMode, Context, Unit};
 use crate::core::TargetKind;
-use crate::util::{internal, CargoResult, Config, ProcessBuilder};
+use crate::util::{internal, CargoResult, Config};
+use cargo_util::ProcessBuilder;
 
 #[derive(Debug, Serialize)]
 struct Invocation {
@@ -63,10 +64,10 @@ impl Invocation {
         }
     }
 
-    pub fn add_output(&mut self, path: &PathBuf, link: &Option<PathBuf>) {
-        self.outputs.push(path.clone());
+    pub fn add_output(&mut self, path: &Path, link: &Option<PathBuf>) {
+        self.outputs.push(path.to_path_buf());
         if let Some(ref link) = *link {
-            self.links.insert(link.clone(), path.clone());
+            self.links.insert(link.clone(), path.to_path_buf());
         }
     }
 

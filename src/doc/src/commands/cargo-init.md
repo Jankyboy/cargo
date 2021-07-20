@@ -20,33 +20,7 @@ will be used. If not, then a sample `src/main.rs` file will be created, or
 If the directory is not already in a VCS repository, then a new repository
 is created (see `--vcs` below).
 
-The "authors" field in the manifest is determined from the environment or
-configuration settings. A name is required and is determined from (first match
-wins):
-
-- `cargo-new.name` Cargo config value
-- `CARGO_NAME` environment variable
-- `GIT_AUTHOR_NAME` environment variable
-- `GIT_COMMITTER_NAME` environment variable
-- `user.name` git configuration value
-- `USER` environment variable
-- `USERNAME` environment variable
-- `NAME` environment variable
-
-The email address is optional and is determined from:
-
-- `cargo-new.email` Cargo config value
-- `CARGO_EMAIL` environment variable
-- `GIT_AUTHOR_EMAIL` environment variable
-- `GIT_COMMITTER_EMAIL` environment variable
-- `user.email` git configuration value
-- `EMAIL` environment variable
-
-See [the reference](../reference/config.html) for more information about
-configuration files.
-
-
-See [cargo-new(1)](cargo-new.md) for a similar command which will create a new package in
+See [cargo-new(1)](cargo-new.html) for a similar command which will create a new package in
 a new directory.
 
 ## OPTIONS
@@ -66,7 +40,7 @@ This is the default behavior.</dd>
 
 <dt class="option-term" id="option-cargo-init---edition"><a class="option-anchor" href="#option-cargo-init---edition"></a><code>--edition</code> <em>edition</em></dt>
 <dd class="option-desc">Specify the Rust edition to use. Default is 2018.
-Possible values: 2015, 2018</dd>
+Possible values: 2015, 2018, 2021</dd>
 
 
 <dt class="option-term" id="option-cargo-init---name"><a class="option-anchor" href="#option-cargo-init---name"></a><code>--name</code> <em>name</em></dt>
@@ -83,7 +57,7 @@ hg, pijul, or fossil) or do not initialize any version control at all
 <dt class="option-term" id="option-cargo-init---registry"><a class="option-anchor" href="#option-cargo-init---registry"></a><code>--registry</code> <em>registry</em></dt>
 <dd class="option-desc">This sets the <code>publish</code> field in <code>Cargo.toml</code> to the given registry name
 which will restrict publishing only to that registry.</p>
-<p>Registry names are defined in <a href="https://doc.rust-lang.org/cargo/reference/config.html">Cargo config files</a>.
+<p>Registry names are defined in <a href="../reference/config.html">Cargo config files</a>.
 If not specified, the default registry defined by the <code>registry.default</code>
 config key is used. If the default registry is not set and <code>--registry</code> is not
 used, the <code>publish</code> field will not be set which means that publishing will not
@@ -101,7 +75,7 @@ be restricted.</dd>
 <dd class="option-desc">Use verbose output. May be specified twice for &quot;very verbose&quot; output which
 includes extra output such as dependency warnings and build script output.
 May also be specified with the <code>term.verbose</code>
-<a href="https://doc.rust-lang.org/cargo/reference/config.html">config value</a>.</dd>
+<a href="../reference/config.html">config value</a>.</dd>
 
 
 <dt class="option-term" id="option-cargo-init--q"><a class="option-anchor" href="#option-cargo-init--q"></a><code>-q</code></dt>
@@ -118,7 +92,7 @@ terminal.</li>
 <li><code>never</code>: Never display colors.</li>
 </ul>
 <p>May also be specified with the <code>term.color</code>
-<a href="https://doc.rust-lang.org/cargo/reference/config.html">config value</a>.</dd>
+<a href="../reference/config.html">config value</a>.</dd>
 
 
 </dl>
@@ -166,4 +140,4 @@ details on environment variables that Cargo reads.
        cargo init
 
 ## SEE ALSO
-[cargo(1)](cargo.md), [cargo-new(1)](cargo-new.md)
+[cargo(1)](cargo.html), [cargo-new(1)](cargo-new.html)

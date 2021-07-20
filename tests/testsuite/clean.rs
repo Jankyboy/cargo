@@ -1,6 +1,6 @@
 //! Tests for the `cargo clean` command.
 
-use cargo_test_support::paths::CargoPathExt;
+use cargo_test_support::paths::is_symlink;
 use cargo_test_support::registry::Package;
 use cargo_test_support::{basic_bin_manifest, basic_manifest, git, main_file, project, rustc_host};
 use std::env;
@@ -409,6 +409,7 @@ fn package_cleans_all_the_things() {
 }
 
 // Ensures that all files for the package have been deleted.
+#[track_caller]
 fn assert_all_clean(build_dir: &Path) {
     let walker = walkdir::WalkDir::new(build_dir).into_iter();
     for entry in walker.filter_entry(|e| {
@@ -437,7 +438,7 @@ fn assert_all_clean(build_dir: &Path) {
         {
             continue;
         }
-        if path.is_symlink() || path.is_file() {
+        if is_symlink(path) || path.is_file() {
             panic!("{:?} was not cleaned", path);
         }
     }
@@ -466,6 +467,19 @@ fn clean_spec_multiple() {
         .build();
 
     p.cargo("build").run();
+
+    // Check suggestion for bad pkgid.
+    p.cargo("clean -p baz")
+        .with_status(101)
+        .with_stderr(
+            "\
+error: package ID specification `baz` did not match any packages
+
+<tab>Did you mean `bar`?
+",
+        )
+        .run();
+
     p.cargo("clean -p bar:1.0.0")
         .with_stderr(
             "warning: version qualifier in `-p bar:1.0.0` is ignored, \

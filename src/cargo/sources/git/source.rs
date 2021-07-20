@@ -66,7 +66,7 @@ fn ident(id: &SourceId) -> String {
         .and_then(|s| s.rev().next())
         .unwrap_or("");
 
-    let ident = if ident == "" { "_empty" } else { ident };
+    let ident = if ident.is_empty() { "_empty" } else { ident };
 
     format!("{}-{}", ident, short_hash(id.canonical_url()))
 }
@@ -126,12 +126,10 @@ impl<'cfg> Source for GitSource<'cfg> {
             // database, then try to resolve our reference with the preexisting
             // repository.
             (None, Some(db)) if self.config.offline() => {
-                let rev = db
-                    .resolve(&self.manifest_reference, None)
-                    .with_context(|| {
-                        "failed to lookup reference in preexisting repository, and \
+                let rev = db.resolve(&self.manifest_reference).with_context(|| {
+                    "failed to lookup reference in preexisting repository, and \
                          can't check for updates in offline mode (--offline)"
-                    })?;
+                })?;
                 (db, rev)
             }
 

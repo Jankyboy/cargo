@@ -96,6 +96,7 @@ considered incompatible.
     * Cargo
         * [Minor: adding a new Cargo feature](#cargo-feature-add)
         * [Major: removing a Cargo feature](#cargo-feature-remove)
+        * [Major: removing a feature from a feature list if that changes functionality or public items](#cargo-feature-remove-another)
         * [Possibly-breaking: removing an optional dependency](#cargo-remove-opt-dep)
         * [Minor: changing dependency features](#cargo-change-dep-feature)
         * [Minor: adding dependencies](#cargo-dep-add)
@@ -131,6 +132,9 @@ fn main() {
     updated_crate::foo(); // Error: cannot find function `foo`
 }
 ```
+
+This includes adding any sort of [`cfg` attribute] which can change which
+items or behavior is available based on [conditional compilation].
 
 Mitigating strategies:
 * Mark items to be removed as [deprecated], and then remove them at a later
@@ -224,14 +228,14 @@ pub struct Foo {
 ///////////////////////////////////////////////////////////
 // Example usage that will break.
 fn main() {
-    let x = updated_crate::Foo { f1: 123 }; // Error: missing field `f2`
+    let x = updated_crate::Foo { f1: 123 }; // Error: cannot construct `Foo`
 }
 ```
 
 Mitigation strategies:
 * Do not add new fields to all-public field structs.
 * Mark structs as [`#[non_exhaustive]`][non_exhaustive] when first introducing
-  an struct to prevent users from using struct literal syntax, and instead
+  a struct to prevent users from using struct literal syntax, and instead
   provide a constructor method and/or [Default] implementation.
 
 <a id="struct-add-public-field-when-no-private"></a>
@@ -266,7 +270,7 @@ fn main() {
 Mitigation strategies:
 * Do not add new new fields to all-public field structs.
 * Mark structs as [`#[non_exhaustive]`][non_exhaustive] when first introducing
-  an struct to prevent users from using struct literal syntax, and instead
+  a struct to prevent users from using struct literal syntax, and instead
   provide a constructor method and/or [Default] implementation.
 
 <a id="struct-private-fields-with-private"></a>
@@ -630,7 +634,7 @@ pub trait Trait<T> {}
 use updated_crate::Trait;
 struct Foo;
 
-impl Trait for Foo {}  // Error: wrong number of type arguments
+impl Trait for Foo {}  // Error: missing generics
 ```
 
 Mitigating strategies:
@@ -738,7 +742,7 @@ pub struct Foo<A: Eq> {
 use updated_crate::Foo;
 
 fn main() {
-    let s = Foo { f1: 1.23 }; // Error: the trait bound `{float}: std::cmp::Eq` is not satisfied
+    let s = Foo { f1: 1.23 }; // Error: the trait bound `{float}: Eq` is not satisfied
 }
 ```
 
@@ -939,7 +943,7 @@ pub fn foo<T, U>() {}
 use updated_crate::foo;
 
 fn main() {
-    foo::<u8>(); // Error: wrong number of type arguments
+    foo::<u8>(); // Error: this function takes 2 type arguments but only 1 type argument was supplied
 }
 ```
 
@@ -1070,7 +1074,7 @@ pub fn foo<T: Copy + IntoIterator<Item = u8>>(x: T) {}
 use updated_crate::foo;
 
 fn main() {
-    foo(vec![1, 2, 3]); // Error: `std::marker::Copy` is not implemented for `std::vec::Vec<u8>`
+    foo(vec![1, 2, 3]); // Error: `Copy` is not implemented for `Vec<u8>`
 }
 ```
 
@@ -1212,6 +1216,28 @@ Mitigation strategies:
   functionality. Document that the feature is deprecated, and remove it in a
   future major SemVer release.
 
+<a id="cargo-feature-remove-another"></a>
+#### Major: removing a feature from a feature list if that changes functionality or public items
+
+If removing a feature from another feature, this can break existing users if
+they are expecting that functionality to be available through that feature.
+
+```toml
+# Breaking change example
+
+###########################################################
+# Before
+[features]
+default = ["std"]
+std = []
+
+###########################################################
+# After
+[features]
+default = []  # This may cause packages to fail if they are expecting std to be enabled.
+std = []
+```
+
 <a id="cargo-remove-opt-dep"></a>
 #### Possibly-breaking: removing an optional dependency
 
@@ -1301,12 +1327,14 @@ to list, so you are encouraged to use the spirit of the [SemVer] spec to guide
 your decisions on how to apply versioning to your application, or at least
 document what your commitments are.
 
-[`no_std`]: ../../reference/crates-and-source-files.html#preludes-and-no_std
+[`cfg` attribute]: ../../reference/conditional-compilation.md#the-cfg-attribute
+[`no_std`]: ../../reference/names/preludes.html#the-no_std-attribute
 [`pub use`]: ../../reference/items/use-declarations.html
 [Cargo feature]: features.md
 [Cargo features]: features.md
 [cfg-accessible]: https://github.com/rust-lang/rust/issues/64797
 [cfg-version]: https://github.com/rust-lang/rust/issues/64796
+[conditional compilation]: ../../reference/conditional-compilation.md
 [Default]: ../../std/default/trait.Default.html
 [deprecated]: ../../reference/attributes/diagnostics.html#the-deprecated-attribute
 [disambiguation syntax]: ../../reference/expressions/call-expr.html#disambiguating-function-calls

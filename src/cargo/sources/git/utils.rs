@@ -1,117 +1,11 @@
 //! Utilities for handling git repositories, mainly around
 //! authentication/cloning.
-//!
-//! # `DefaultBranch` vs `Branch("master")`
-//!
-//! Long ago in a repository not so far away, an author (*cough* me *cough*)
-//! didn't understand how branches work in Git. This led the author to
-//! interpret these two dependency declarations the exact same way with the
-//! former literally internally desugaring to the latter:
-//!
-//! ```toml
-//! [dependencies]
-//! foo = { git = "https://example.org/foo" }
-//! foo = { git = "https://example.org/foo", branch = "master" }
-//! ```
-//!
-//! It turns out there's this things called `HEAD` in git remotes which points
-//! to the "main branch" of a repository, and the main branch is not always
-//! literally called master. What Cargo would like to do is to differentiate
-//! these two dependency directives, with the first meaning "depend on `HEAD`".
-//!
-//! Unfortunately implementing this is a breaking change. This was first
-//! attempted in #8364 but resulted in #8468 which has two independent bugs
-//! listed on that issue. Despite this breakage we would still like to roll out
-//! this change in Cargo, but we're now going to take it very slow and try to
-//! break as few people as possible along the way. These comments are intended
-//! to log the current progress and what wonkiness you might see within Cargo
-//! when handling `DefaultBranch` vs `Branch("master")`
-//!
-//! ### Repositories with `master` and a default branch
-//!
-//! This is one of the most obvious sources of breakage. If our `foo` example
-//! in above had two branches, one called `master` and another which was
-//! actually the main branch, then Cargo's change will always be a breaking
-//! change. This is because what's downloaded is an entirely different branch
-//! if we change the meaning of the dependency directive.
-//!
-//! It's expected this is quite rare, but to handle this case nonetheless when
-//! Cargo fetches from a git remote and the dependency specification is
-//! `DefaultBranch` then it will issue a warning if the `HEAD` reference
-//! doesn't match `master`. It's expected in this situation that authors will
-//! fix builds locally by specifying `branch = 'master'`.
-//!
-//! ### Differences in `cargo vendor` configuration
-//!
-//! When executing `cargo vendor` it will print out configuration which can
-//! then be used to configure Cargo to use the `vendor` directory. Historically
-//! this configuration looked like:
-//!
-//! ```toml
-//! [source."https://example.org/foo"]
-//! git = "https://example.org/foo"
-//! branch = "master"
-//! replace-with = "vendored-sources"
-//! ```
-//!
-//! We would like to, however, transition this to not include the `branch =
-//! "master"` unless the dependency directive actually mentions a branch.
-//! Conveniently older Cargo implementations all interpret a missing `branch`
-//! as `branch = "master"` so it's a backwards-compatible change to remove the
-//! `branch = "master"` directive. As a result, `cargo vendor` will no longer
-//! emit a `branch` if the git reference is `DefaultBranch`
-//!
-//! ### Differences in lock file formats
-//!
-//! Another issue pointed out in #8364 was that `Cargo.lock` files were no
-//! longer compatible on stable and nightly with each other. The underlying
-//! issue is that Cargo was serializing `branch = "master"` *differently* on
-//! nightly than it was on stable. Historical implementations of Cargo would
-//! encode `DefaultBranch` and `Branch("master")` the same way in `Cargo.lock`,
-//! so when reading a lock file we have no way of differentiating between the
-//! two.
-//!
-//! To handle this difference in encoding of `Cargo.lock` we'll be employing
-//! the standard scheme to change `Cargo.lock`:
-//!
-//! * Add support in Cargo for a future format, don't turn it on.
-//! * Wait a long time
-//! * Turn on the future format
-//!
-//! Here the "future format" is `branch=master` shows up if you have a `branch`
-//! in `Cargo.toml`, and otherwise nothing shows up in URLs. Due to the effect
-//! on crate graph resolution, however, this flows into the next point..
-//!
-//! ### Unification in the Cargo dependency graph
-//!
-//! Today dependencies with `branch = "master"` will unify with dependencies
-//! that say nothing. (that's because the latter simply desugars). This means
-//! the two `foo` directives above will resolve to the same dependency.
-//!
-//! The best idea I've got to fix this is to basically get everyone (if anyone)
-//! to stop doing this today. The crate graph resolver will start to warn if it
-//! detects that multiple `Cargo.toml` directives are detected and mixed.  The
-//! thinking is that when we turn on the new lock file format it'll also be
-//! hard breaking change for any project which still has dependencies to
-//! both the `master` branch and not.
-//!
-//! ### What we're doing today
-//!
-//! The general goal of Cargo today is to internally distinguish
-//! `DefaultBranch` and `Branch("master")`, but for the time being they should
-//! be functionally equivalent in terms of builds. The hope is that we'll let
-//! all these warnings and such bake for a good long time, and eventually we'll
-//! flip some switches if your build has no warnings it'll work before and
-//! after.
-//!
-//! That's the dream at least, we'll see how this plays out.
 
 use crate::core::GitReference;
-use crate::util::errors::{CargoResult, CargoResultExt};
-use crate::util::paths;
-use crate::util::process_builder::process;
-use crate::util::{network, Config, IntoUrl, Progress};
-use anyhow::{anyhow, Context};
+use crate::util::errors::CargoResult;
+use crate::util::{network, Config, IntoUrl, MetricsCounter, Progress};
+use anyhow::{anyhow, Context as _};
+use cargo_util::{paths, ProcessBuilder};
 use curl::easy::List;
 use git2::{self, ErrorClass, ObjectType};
 use log::{debug, info};
@@ -121,6 +15,7 @@ use std::env;
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::{Duration, Instant};
 use url::Url;
 
 fn serialize_str<T, S>(t: &T, s: S) -> Result<S::Ok, S::Error>
@@ -182,7 +77,7 @@ impl GitRemote {
     }
 
     pub fn rev_for(&self, path: &Path, reference: &GitReference) -> CargoResult<git2::Oid> {
-        reference.resolve(&self.db_at(path)?.repo, None)
+        reference.resolve(&self.db_at(path)?.repo)
     }
 
     pub fn checkout(
@@ -207,7 +102,7 @@ impl GitRemote {
                     }
                 }
                 None => {
-                    if let Ok(rev) = reference.resolve(&db.repo, Some((&self.url, cargo_config))) {
+                    if let Ok(rev) = reference.resolve(&db.repo) {
                         return Ok((db, rev));
                     }
                 }
@@ -226,7 +121,7 @@ impl GitRemote {
             .context(format!("failed to clone into: {}", into.display()))?;
         let rev = match locked_rev {
             Some(rev) => rev,
-            None => reference.resolve(&repo, Some((&self.url, cargo_config)))?,
+            None => reference.resolve(&repo)?,
         };
 
         Ok((
@@ -295,21 +190,13 @@ impl GitDatabase {
         self.repo.revparse_single(&oid.to_string()).is_ok()
     }
 
-    pub fn resolve(
-        &self,
-        r: &GitReference,
-        remote_and_config: Option<(&Url, &Config)>,
-    ) -> CargoResult<git2::Oid> {
-        r.resolve(&self.repo, remote_and_config)
+    pub fn resolve(&self, r: &GitReference) -> CargoResult<git2::Oid> {
+        r.resolve(&self.repo)
     }
 }
 
 impl GitReference {
-    pub fn resolve(
-        &self,
-        repo: &git2::Repository,
-        remote_and_config: Option<(&Url, &Config)>,
-    ) -> CargoResult<git2::Oid> {
+    pub fn resolve(&self, repo: &git2::Repository) -> CargoResult<git2::Oid> {
         let id = match self {
             // Note that we resolve the named tag here in sync with where it's
             // fetched into via `fetch` below.
@@ -320,7 +207,7 @@ impl GitReference {
                 let obj = obj.peel(ObjectType::Commit)?;
                 Ok(obj.id())
             })()
-            .chain_err(|| format!("failed to find tag `{}`", s))?,
+            .with_context(|| format!("failed to find tag `{}`", s))?,
 
             // Resolve the remote name since that's all we're configuring in
             // `fetch` below.
@@ -328,44 +215,17 @@ impl GitReference {
                 let name = format!("origin/{}", s);
                 let b = repo
                     .find_branch(&name, git2::BranchType::Remote)
-                    .chain_err(|| format!("failed to find branch `{}`", s))?;
+                    .with_context(|| format!("failed to find branch `{}`", s))?;
                 b.get()
                     .target()
                     .ok_or_else(|| anyhow::format_err!("branch `{}` did not have a target", s))?
             }
 
-            // See the module docs for why we're using `master` here.
+            // We'll be using the HEAD commit
             GitReference::DefaultBranch => {
-                let master = repo
-                    .find_branch("origin/master", git2::BranchType::Remote)
-                    .chain_err(|| "failed to find branch `master`")?;
-                let master = master
-                    .get()
-                    .target()
-                    .ok_or_else(|| anyhow::format_err!("branch `master` did not have a target"))?;
-
-                if let Some((remote, config)) = remote_and_config {
-                    let head_id = repo.refname_to_id("refs/remotes/origin/HEAD")?;
-                    let head = repo.find_object(head_id, None)?;
-                    let head = head.peel(ObjectType::Commit)?.id();
-
-                    if head != master {
-                        config.shell().warn(&format!(
-                            "\
-                                fetching `master` branch from `{}` but the `HEAD` \
-                                reference for this repository is not the \
-                                `master` branch. This behavior will change \
-                                in Cargo in the future and your build may \
-                                break, so it's recommended to place \
-                                `branch = \"master\"` in Cargo.toml when \
-                                depending on this git repository to ensure \
-                                that your build will continue to work.\
-                            ",
-                            remote,
-                        ))?;
-                    }
-                }
-                master
+                let head_id = repo.refname_to_id("refs/remotes/origin/HEAD")?;
+                let head = repo.find_object(head_id, None)?;
+                head.peel(ObjectType::Commit)?.id()
             }
 
             GitReference::Rev(s) => {
@@ -490,7 +350,7 @@ impl<'a> GitCheckout<'a> {
             info!("update submodules for: {:?}", repo.workdir().unwrap());
 
             for mut child in repo.submodules()? {
-                update_submodule(repo, &mut child, cargo_config).chain_err(|| {
+                update_submodule(repo, &mut child, cargo_config).with_context(|| {
                     format!(
                         "failed to update submodule `{}`",
                         child.name().unwrap_or("")
@@ -543,7 +403,7 @@ impl<'a> GitCheckout<'a> {
             cargo_config
                 .shell()
                 .status("Updating", format!("git submodule `{}`", url))?;
-            fetch(&mut repo, url, &reference, cargo_config).chain_err(|| {
+            fetch(&mut repo, url, &reference, cargo_config).with_context(|| {
                 format!(
                     "failed to fetch submodule `{}` from {}",
                     child.name().unwrap_or(""),
@@ -689,8 +549,7 @@ where
     // call our callback, `f`, in a loop here.
     if ssh_username_requested {
         debug_assert!(res.is_err());
-        let mut attempts = Vec::new();
-        attempts.push("git".to_string());
+        let mut attempts = vec![String::from("git")];
         if let Ok(s) = env::var("USER").or_else(|_| env::var("USERNAME")) {
             attempts.push(s);
         }
@@ -755,7 +614,7 @@ where
                 msg.push_str(attempt);
             }
         }
-        msg.push_str("\n");
+        msg.push('\n');
         if !ssh_agent_attempts.is_empty() {
             let names = ssh_agent_attempts
                 .iter()
@@ -819,7 +678,7 @@ fn reset(repo: &git2::Repository, obj: &git2::Object<'_>, config: &Config) -> Ca
     let mut pb = Progress::new("Checkout", config);
     let mut opts = git2::build::CheckoutBuilder::new();
     opts.progress(|_, cur, max| {
-        drop(pb.tick(cur, max));
+        drop(pb.tick(cur, max, ""));
     });
     debug!("doing reset");
     repo.reset(obj, git2::ResetType::Hard, Some(&mut opts))?;
@@ -836,12 +695,49 @@ pub fn with_fetch_options(
     let mut progress = Progress::new("Fetch", config);
     network::with_retry(config, || {
         with_authentication(url, git_config, |f| {
+            let mut last_update = Instant::now();
             let mut rcb = git2::RemoteCallbacks::new();
+            // We choose `N=10` here to make a `300ms * 10slots ~= 3000ms`
+            // sliding window for tracking the data transfer rate (in bytes/s).
+            let mut counter = MetricsCounter::<10>::new(0, last_update);
             rcb.credentials(f);
-
             rcb.transfer_progress(|stats| {
+                let indexed_deltas = stats.indexed_deltas();
+                let msg = if indexed_deltas > 0 {
+                    // Resolving deltas.
+                    format!(
+                        ", ({}/{}) resolving deltas",
+                        indexed_deltas,
+                        stats.total_deltas()
+                    )
+                } else {
+                    // Receiving objects.
+                    //
+                    // # Caveat
+                    //
+                    // Progress bar relies on git2 calling `transfer_progress`
+                    // to update its transfer rate, but we cannot guarantee a
+                    // periodic call of that callback. Thus if we don't receive
+                    // any data for, say, 10 seconds, the rate will get stuck
+                    // and never go down to 0B/s.
+                    // In the future, we need to find away to update the rate
+                    // even when the callback is not called.
+                    let now = Instant::now();
+                    // Scrape a `received_bytes` to the counter every 300ms.
+                    if now - last_update > Duration::from_millis(300) {
+                        counter.add(stats.received_bytes(), now);
+                        last_update = now;
+                    }
+                    fn format_bytes(bytes: f32) -> (&'static str, f32) {
+                        static UNITS: [&str; 5] = ["", "Ki", "Mi", "Gi", "Ti"];
+                        let i = (bytes.log2() / 10.0).min(4.0) as usize;
+                        (UNITS[i], bytes / 1024_f32.powi(i as i32))
+                    }
+                    let (unit, rate) = format_bytes(counter.rate());
+                    format!(", {:.2}{}B/s", rate, unit)
+                };
                 progress
-                    .tick(stats.indexed_objects(), stats.total_objects())
+                    .tick(stats.indexed_objects(), stats.total_objects(), &msg)
                     .is_ok()
             });
 
@@ -900,8 +796,6 @@ pub fn fetch(
         }
 
         GitReference::DefaultBranch => {
-            // See the module docs for why we're fetching `master` here.
-            refspecs.push(String::from("refs/heads/master:refs/remotes/origin/master"));
             refspecs.push(String::from("HEAD:refs/remotes/origin/HEAD"));
         }
 
@@ -978,7 +872,7 @@ fn fetch_with_cli(
     tags: bool,
     config: &Config,
 ) -> CargoResult<()> {
-    let mut cmd = process("git");
+    let mut cmd = ProcessBuilder::new("git");
     cmd.arg("fetch");
     if tags {
         cmd.arg("--tags");
@@ -1154,11 +1048,7 @@ fn github_up_to_date(
 
     // Trim off the `.git` from the repository, if present, since that's
     // optional for GitHub and won't work when we try to use the API as well.
-    let repository = if repository.ends_with(".git") {
-        &repository[..repository.len() - 4]
-    } else {
-        repository
-    };
+    let repository = repository.strip_suffix(".git").unwrap_or(repository);
 
     let url = format!(
         "https://api.github.com/repos/{}/{}/commits/{}",
@@ -1171,10 +1061,7 @@ fn github_up_to_date(
     handle.useragent("cargo")?;
     let mut headers = List::new();
     headers.append("Accept: application/vnd.github.3.sha")?;
-    headers.append(&format!(
-        "If-None-Match: \"{}\"",
-        reference.resolve(repo, None)?
-    ))?;
+    headers.append(&format!("If-None-Match: \"{}\"", reference.resolve(repo)?))?;
     handle.http_headers(headers)?;
     handle.perform()?;
     Ok(handle.response_code()? == 304)

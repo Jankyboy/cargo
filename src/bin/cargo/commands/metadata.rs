@@ -8,7 +8,7 @@ pub fn cli() -> App {
              the concrete used versions including overrides, \
              in machine-readable format",
         )
-        .arg(opt("quiet", "No output printed to stdout").short("q"))
+        .arg(opt("quiet", "Do not print cargo log messages").short("q"))
         .arg_features()
         .arg(multi_opt(
             "filter-platform",
@@ -44,15 +44,13 @@ pub fn exec(config: &mut Config, args: &ArgMatches<'_>) -> CliResult {
     };
 
     let options = OutputMetadataOptions {
-        features: values(args, "features"),
-        all_features: args.is_present("all-features"),
-        no_default_features: args.is_present("no-default-features"),
+        cli_features: args.cli_features()?,
         no_deps: args.is_present("no-deps"),
         filter_platforms: args._values_of("filter-platform"),
         version,
     };
 
     let result = ops::output_metadata(&ws, &options)?;
-    config.shell().print_json(&result);
+    config.shell().print_json(&result)?;
     Ok(())
 }

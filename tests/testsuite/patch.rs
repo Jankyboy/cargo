@@ -2,7 +2,7 @@
 
 use cargo_test_support::git;
 use cargo_test_support::paths;
-use cargo_test_support::registry::Package;
+use cargo_test_support::registry::{self, Package};
 use cargo_test_support::{basic_manifest, project};
 use std::fs;
 
@@ -64,6 +64,179 @@ fn replace() {
         .run();
 
     p.cargo("build").with_stderr("[FINISHED] [..]").run();
+}
+
+#[cargo_test]
+fn from_config_without_z() {
+    Package::new("bar", "0.1.0").publish();
+
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [package]
+                name = "foo"
+                version = "0.0.1"
+                authors = []
+
+                [dependencies]
+                bar = "0.1.0"
+            "#,
+        )
+        .file(
+            ".cargo/config.toml",
+            r#"
+                [patch.crates-io]
+                bar = { path = 'bar' }
+            "#,
+        )
+        .file("src/lib.rs", "")
+        .file("bar/Cargo.toml", &basic_manifest("bar", "0.1.1"))
+        .file("bar/src/lib.rs", r#""#)
+        .build();
+
+    p.cargo("build")
+        .with_stderr(
+            "\
+[WARNING] `[patch]` in cargo config was ignored, the -Zpatch-in-config command-line flag is required
+[UPDATING] `[ROOT][..]` index
+[DOWNLOADING] crates ...
+[DOWNLOADED] bar v0.1.0 ([..])
+[COMPILING] bar v0.1.0
+[COMPILING] foo v0.0.1 ([CWD])
+[FINISHED] dev [unoptimized + debuginfo] target(s) in [..]
+",
+        )
+        .run();
+}
+
+#[cargo_test]
+fn from_config() {
+    Package::new("bar", "0.1.0").publish();
+
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [package]
+                name = "foo"
+                version = "0.0.1"
+                authors = []
+
+                [dependencies]
+                bar = "0.1.0"
+            "#,
+        )
+        .file(
+            ".cargo/config.toml",
+            r#"
+                [patch.crates-io]
+                bar = { path = 'bar' }
+            "#,
+        )
+        .file("src/lib.rs", "")
+        .file("bar/Cargo.toml", &basic_manifest("bar", "0.1.1"))
+        .file("bar/src/lib.rs", r#""#)
+        .build();
+
+    p.cargo("build -Zpatch-in-config")
+        .masquerade_as_nightly_cargo()
+        .with_stderr(
+            "\
+[UPDATING] `[ROOT][..]` index
+[COMPILING] bar v0.1.1 ([..])
+[COMPILING] foo v0.0.1 ([CWD])
+[FINISHED] dev [unoptimized + debuginfo] target(s) in [..]
+",
+        )
+        .run();
+}
+
+#[cargo_test]
+fn from_config_relative() {
+    Package::new("bar", "0.1.0").publish();
+
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [package]
+                name = "foo"
+                version = "0.0.1"
+                authors = []
+
+                [dependencies]
+                bar = "0.1.0"
+            "#,
+        )
+        .file(
+            "../.cargo/config.toml",
+            r#"
+                [patch.crates-io]
+                bar = { path = 'foo/bar' }
+            "#,
+        )
+        .file("src/lib.rs", "")
+        .file("bar/Cargo.toml", &basic_manifest("bar", "0.1.1"))
+        .file("bar/src/lib.rs", r#""#)
+        .build();
+
+    p.cargo("build -Zpatch-in-config")
+        .masquerade_as_nightly_cargo()
+        .with_stderr(
+            "\
+[UPDATING] `[ROOT][..]` index
+[COMPILING] bar v0.1.1 ([..])
+[COMPILING] foo v0.0.1 ([CWD])
+[FINISHED] dev [unoptimized + debuginfo] target(s) in [..]
+",
+        )
+        .run();
+}
+
+#[cargo_test]
+fn from_config_precedence() {
+    Package::new("bar", "0.1.0").publish();
+
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [package]
+                name = "foo"
+                version = "0.0.1"
+                authors = []
+
+                [dependencies]
+                bar = "0.1.0"
+
+                [patch.crates-io]
+                bar = { path = 'bar' }
+            "#,
+        )
+        .file(
+            ".cargo/config.toml",
+            r#"
+                [patch.crates-io]
+                bar = { path = 'no-such-path' }
+            "#,
+        )
+        .file("src/lib.rs", "")
+        .file("bar/Cargo.toml", &basic_manifest("bar", "0.1.1"))
+        .file("bar/src/lib.rs", r#""#)
+        .build();
+
+    p.cargo("build -Zpatch-in-config")
+        .masquerade_as_nightly_cargo()
+        .with_stderr(
+            "\
+[UPDATING] `[ROOT][..]` index
+[COMPILING] bar v0.1.1 ([..])
+[COMPILING] foo v0.0.1 ([CWD])
+[FINISHED] dev [unoptimized + debuginfo] target(s) in [..]
+",
+        )
+        .run();
 }
 
 #[cargo_test]
@@ -269,6 +442,127 @@ fn unused() {
 }
 
 #[cargo_test]
+fn prefer_patch_version() {
+    Package::new("bar", "0.1.2").publish();
+
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [package]
+                name = "foo"
+                version = "0.0.1"
+                authors = []
+
+                [dependencies]
+                bar = "0.1.0"
+
+                [patch.crates-io]
+                bar = { path = "bar" }
+            "#,
+        )
+        .file("src/lib.rs", "")
+        .file("bar/Cargo.toml", &basic_manifest("bar", "0.1.1"))
+        .file("bar/src/lib.rs", "")
+        .build();
+
+    p.cargo("build")
+        .with_stderr(
+            "\
+[UPDATING] `[ROOT][..]` index
+[COMPILING] bar v0.1.1 ([CWD]/bar)
+[COMPILING] foo v0.0.1 ([CWD])
+[FINISHED] dev [unoptimized + debuginfo] target(s) in [..]
+",
+        )
+        .run();
+    p.cargo("build")
+        .with_stderr(
+            "\
+[FINISHED] [..]
+",
+        )
+        .run();
+
+    // there should be no patch.unused in the toml file
+    let lock = p.read_lockfile();
+    let toml: toml::Value = toml::from_str(&lock).unwrap();
+    assert!(toml.get("patch").is_none());
+}
+
+#[cargo_test]
+fn unused_from_config() {
+    Package::new("bar", "0.1.0").publish();
+
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [package]
+                name = "foo"
+                version = "0.0.1"
+                authors = []
+
+                [dependencies]
+                bar = "0.1.0"
+            "#,
+        )
+        .file(
+            ".cargo/config.toml",
+            r#"
+                [patch.crates-io]
+                bar = { path = "bar" }
+            "#,
+        )
+        .file("src/lib.rs", "")
+        .file("bar/Cargo.toml", &basic_manifest("bar", "0.2.0"))
+        .file("bar/src/lib.rs", "not rust code")
+        .build();
+
+    p.cargo("build -Zpatch-in-config")
+        .masquerade_as_nightly_cargo()
+        .with_stderr(
+            "\
+[UPDATING] `[ROOT][..]` index
+[WARNING] Patch `bar v0.2.0 ([CWD]/bar)` was not used in the crate graph.
+[..]
+[..]
+[..]
+[..]
+[DOWNLOADING] crates ...
+[DOWNLOADED] bar v0.1.0 [..]
+[COMPILING] bar v0.1.0
+[COMPILING] foo v0.0.1 ([CWD])
+[FINISHED] dev [unoptimized + debuginfo] target(s) in [..]
+",
+        )
+        .run();
+    p.cargo("build -Zpatch-in-config")
+        .masquerade_as_nightly_cargo()
+        .with_stderr(
+            "\
+[WARNING] Patch `bar v0.2.0 ([CWD]/bar)` was not used in the crate graph.
+[..]
+[..]
+[..]
+[..]
+[FINISHED] [..]
+",
+        )
+        .run();
+
+    // unused patch should be in the lock file
+    let lock = p.read_lockfile();
+    let toml: toml::Value = toml::from_str(&lock).unwrap();
+    assert_eq!(toml["patch"]["unused"].as_array().unwrap().len(), 1);
+    assert_eq!(toml["patch"]["unused"][0]["name"].as_str(), Some("bar"));
+    assert_eq!(
+        toml["patch"]["unused"][0]["version"].as_str(),
+        Some("0.2.0")
+    );
+}
+
+#[cargo_test]
 fn unused_git() {
     Package::new("bar", "0.1.0").publish();
 
@@ -396,6 +690,66 @@ fn add_patch() {
 }
 
 #[cargo_test]
+fn add_patch_from_config() {
+    Package::new("bar", "0.1.0").publish();
+
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [package]
+                name = "foo"
+                version = "0.0.1"
+                authors = []
+
+                [dependencies]
+                bar = "0.1.0"
+            "#,
+        )
+        .file("src/lib.rs", "")
+        .file("bar/Cargo.toml", &basic_manifest("bar", "0.1.0"))
+        .file("bar/src/lib.rs", r#""#)
+        .build();
+
+    p.cargo("build")
+        .with_stderr(
+            "\
+[UPDATING] `[ROOT][..]` index
+[DOWNLOADING] crates ...
+[DOWNLOADED] bar v0.1.0 [..]
+[COMPILING] bar v0.1.0
+[COMPILING] foo v0.0.1 ([CWD])
+[FINISHED] dev [unoptimized + debuginfo] target(s) in [..]
+",
+        )
+        .run();
+    p.cargo("build").with_stderr("[FINISHED] [..]").run();
+
+    p.change_file(
+        ".cargo/config.toml",
+        r#"
+            [patch.crates-io]
+            bar = { path = 'bar' }
+        "#,
+    );
+
+    p.cargo("build -Zpatch-in-config")
+        .masquerade_as_nightly_cargo()
+        .with_stderr(
+            "\
+[COMPILING] bar v0.1.0 ([CWD]/bar)
+[COMPILING] foo v0.0.1 ([CWD])
+[FINISHED] dev [unoptimized + debuginfo] target(s) in [..]
+",
+        )
+        .run();
+    p.cargo("build -Zpatch-in-config")
+        .masquerade_as_nightly_cargo()
+        .with_stderr("[FINISHED] [..]")
+        .run();
+}
+
+#[cargo_test]
 fn add_ignored_patch() {
     Package::new("bar", "0.1.0").publish();
 
@@ -477,6 +831,102 @@ fn add_ignored_patch() {
 [COMPILING] bar v0.1.1 ([CWD]/bar)
 [COMPILING] foo v0.0.1 ([CWD])
 [FINISHED] dev [..]
+",
+        )
+        .run();
+}
+
+#[cargo_test]
+fn add_patch_with_features() {
+    Package::new("bar", "0.1.0").publish();
+
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+            [package]
+            name = "foo"
+            version = "0.0.1"
+            authors = []
+
+            [dependencies]
+            bar = "0.1.0"
+
+            [patch.crates-io]
+            bar = { path = 'bar', features = ["some_feature"] }
+        "#,
+        )
+        .file("src/lib.rs", "")
+        .file("bar/Cargo.toml", &basic_manifest("bar", "0.1.0"))
+        .file("bar/src/lib.rs", r#""#)
+        .build();
+
+    p.cargo("build")
+        .with_stderr(
+            "\
+[WARNING] patch for `bar` uses the features mechanism. \
+default-features and features will not take effect because the patch dependency does not support this mechanism
+[UPDATING] `[ROOT][..]` index
+[COMPILING] bar v0.1.0 ([CWD]/bar)
+[COMPILING] foo v0.0.1 ([CWD])
+[FINISHED] dev [unoptimized + debuginfo] target(s) in [..]
+",
+        )
+        .run();
+    p.cargo("build")
+        .with_stderr(
+            "\
+[WARNING] patch for `bar` uses the features mechanism. \
+default-features and features will not take effect because the patch dependency does not support this mechanism
+[FINISHED] [..]
+",
+        )
+        .run();
+}
+
+#[cargo_test]
+fn add_patch_with_setting_default_features() {
+    Package::new("bar", "0.1.0").publish();
+
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+            [package]
+            name = "foo"
+            version = "0.0.1"
+            authors = []
+
+            [dependencies]
+            bar = "0.1.0"
+
+            [patch.crates-io]
+            bar = { path = 'bar', default-features = false, features = ["none_default_feature"] }
+        "#,
+        )
+        .file("src/lib.rs", "")
+        .file("bar/Cargo.toml", &basic_manifest("bar", "0.1.0"))
+        .file("bar/src/lib.rs", r#""#)
+        .build();
+
+    p.cargo("build")
+        .with_stderr(
+            "\
+[WARNING] patch for `bar` uses the features mechanism. \
+default-features and features will not take effect because the patch dependency does not support this mechanism
+[UPDATING] `[ROOT][..]` index
+[COMPILING] bar v0.1.0 ([CWD]/bar)
+[COMPILING] foo v0.0.1 ([CWD])
+[FINISHED] dev [unoptimized + debuginfo] target(s) in [..]
+",
+        )
+        .run();
+    p.cargo("build")
+        .with_stderr(
+            "\
+[WARNING] patch for `bar` uses the features mechanism. \
+default-features and features will not take effect because the patch dependency does not support this mechanism
+[FINISHED] [..]
 ",
         )
         .run();
@@ -1543,6 +1993,7 @@ fn update_unused_new_version() {
 #[cargo_test]
 fn too_many_matches() {
     // The patch locations has multiple versions that match.
+    registry::alt_init();
     Package::new("bar", "0.1.0").publish();
     Package::new("bar", "0.1.0").alternative(true).publish();
     Package::new("bar", "0.1.1").alternative(true).publish();
@@ -1866,6 +2317,7 @@ fn patched_dep_new_version() {
 fn patch_update_doesnt_update_other_sources() {
     // Very extreme edge case, make sure a patch update doesn't update other
     // sources.
+    registry::alt_init();
     Package::new("bar", "0.1.0").publish();
     Package::new("bar", "0.1.0").alternative(true).publish();
 
@@ -1931,6 +2383,7 @@ fn patch_update_doesnt_update_other_sources() {
 #[cargo_test]
 fn can_update_with_alt_reg() {
     // A patch to an alt reg can update.
+    registry::alt_init();
     Package::new("bar", "0.1.0").publish();
     Package::new("bar", "0.1.0").alternative(true).publish();
     Package::new("bar", "0.1.1").alternative(true).publish();
@@ -2010,5 +2463,82 @@ fn can_update_with_alt_reg() {
 [FINISHED] [..]
 ",
         )
+        .run();
+}
+
+#[cargo_test]
+fn old_git_patch() {
+    // Example where an old lockfile with an explicit branch="master" in Cargo.toml.
+    Package::new("bar", "1.0.0").publish();
+    let (bar, bar_repo) = git::new_repo("bar", |p| {
+        p.file("Cargo.toml", &basic_manifest("bar", "1.0.0"))
+            .file("src/lib.rs", "")
+    });
+
+    let bar_oid = bar_repo.head().unwrap().target().unwrap();
+
+    let p = project()
+        .file(
+            "Cargo.toml",
+            &format!(
+                r#"
+                    [package]
+                    name = "foo"
+                    version = "0.1.0"
+
+                    [dependencies]
+                    bar = "1.0"
+
+                    [patch.crates-io]
+                    bar = {{ git = "{}", branch = "master" }}
+                "#,
+                bar.url()
+            ),
+        )
+        .file(
+            "Cargo.lock",
+            &format!(
+                r#"
+# This file is automatically @generated by Cargo.
+# It is not intended for manual editing.
+[[package]]
+name = "bar"
+version = "1.0.0"
+source = "git+{}#{}"
+
+[[package]]
+name = "foo"
+version = "0.1.0"
+dependencies = [
+ "bar",
+]
+            "#,
+                bar.url(),
+                bar_oid
+            ),
+        )
+        .file("src/lib.rs", "")
+        .build();
+
+    bar.change_file("Cargo.toml", &basic_manifest("bar", "2.0.0"));
+    git::add(&bar_repo);
+    git::commit(&bar_repo);
+
+    // This *should* keep the old lock.
+    p.cargo("tree")
+        // .env("CARGO_LOG", "trace")
+        .with_stderr(
+            "\
+[UPDATING] [..]
+",
+        )
+        // .with_status(1)
+        .with_stdout(format!(
+            "\
+foo v0.1.0 [..]
+└── bar v1.0.0 (file:///[..]branch=master#{})
+",
+            &bar_oid.to_string()[..8]
+        ))
         .run();
 }

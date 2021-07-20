@@ -1,9 +1,10 @@
 //! Tests for the `cargo doc` command.
 
+use cargo::core::compiler::RustDocFingerprint;
 use cargo_test_support::paths::CargoPathExt;
 use cargo_test_support::registry::Package;
 use cargo_test_support::{basic_lib_manifest, basic_manifest, git, project};
-use cargo_test_support::{is_nightly, rustc_host};
+use cargo_test_support::{is_nightly, rustc_host, symlink_supported};
 use std::fs;
 use std::str;
 
@@ -222,9 +223,15 @@ fn doc_multiple_targets_same_name_lib() {
 
     p.cargo("doc --workspace")
         .with_status(101)
-        .with_stderr_contains("[..] library `foo_lib` is specified [..]")
-        .with_stderr_contains("[..] `foo v0.1.0[..]` [..]")
-        .with_stderr_contains("[..] `bar v0.1.0[..]` [..]")
+        .with_stderr(
+            "\
+error: document output filename collision
+The lib `foo_lib` in package `foo v0.1.0 ([ROOT]/foo/foo)` has the same name as \
+the lib `foo_lib` in package `bar v0.1.0 ([ROOT]/foo/bar)`.
+Only one may be documented at once since they output to the same path.
+Consider documenting only one, renaming one, or marking one with `doc = false` in Cargo.toml.
+",
+        )
         .run();
 }
 
@@ -264,13 +271,22 @@ fn doc_multiple_targets_same_name() {
         .build();
 
     p.cargo("doc --workspace")
-        .with_stderr_contains("[DOCUMENTING] foo v0.1.0 ([CWD]/foo)")
-        .with_stderr_contains("[DOCUMENTING] bar v0.1.0 ([CWD]/bar)")
-        .with_stderr_contains("[FINISHED] dev [unoptimized + debuginfo] target(s) in [..]")
+        .with_stderr_unordered(
+            "\
+warning: output filename collision.
+The bin target `foo_lib` in package `foo v0.1.0 ([ROOT]/foo/foo)` \
+has the same output filename as the lib target `foo_lib` in package \
+`bar v0.1.0 ([ROOT]/foo/bar)`.
+Colliding filename is: [ROOT]/foo/target/doc/foo_lib/index.html
+The targets should have unique names.
+This is a known bug where multiple crates with the same name use
+the same path; see <https://github.com/rust-lang/cargo/issues/6313>.
+[DOCUMENTING] bar v0.1.0 ([ROOT]/foo/bar)
+[DOCUMENTING] foo v0.1.0 ([ROOT]/foo/foo)
+[FINISHED] [..]
+",
+        )
         .run();
-    assert!(p.root().join("target/doc").is_dir());
-    let doc_file = p.root().join("target/doc/foo_lib/index.html");
-    assert!(doc_file.is_file());
 }
 
 #[cargo_test]
@@ -289,29 +305,31 @@ fn doc_multiple_targets_same_name_bin() {
                 [package]
                 name = "foo"
                 version = "0.1.0"
-                [[bin]]
-                name = "foo-cli"
             "#,
         )
-        .file("foo/src/foo-cli.rs", "")
+        .file("foo/src/bin/foo-cli.rs", "")
         .file(
             "bar/Cargo.toml",
             r#"
                 [package]
                 name = "bar"
                 version = "0.1.0"
-                [[bin]]
-                name = "foo-cli"
             "#,
         )
-        .file("bar/src/foo-cli.rs", "")
+        .file("bar/src/bin/foo-cli.rs", "")
         .build();
 
     p.cargo("doc --workspace")
         .with_status(101)
-        .with_stderr_contains("[..] binary `foo_cli` is specified [..]")
-        .with_stderr_contains("[..] `foo v0.1.0[..]` [..]")
-        .with_stderr_contains("[..] `bar v0.1.0[..]` [..]")
+        .with_stderr(
+            "\
+error: document output filename collision
+The bin `foo-cli` in package `foo v0.1.0 ([ROOT]/foo/foo)` has the same name as \
+the bin `foo-cli` in package `bar v0.1.0 ([ROOT]/foo/bar)`.
+Only one may be documented at once since they output to the same path.
+Consider documenting only one, renaming one, or marking one with `doc = false` in Cargo.toml.
+",
+        )
         .run();
 }
 
@@ -534,6 +552,60 @@ fn doc_dash_p() {
 [..] b v0.0.1 ([CWD]/b)
 [..] b v0.0.1 ([CWD]/b)
 [DOCUMENTING] a v0.0.1 ([CWD]/a)
+[FINISHED] dev [unoptimized + debuginfo] target(s) in [..]
+",
+        )
+        .run();
+}
+
+#[cargo_test]
+fn doc_all_exclude() {
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [workspace]
+                members = ["bar", "baz"]
+            "#,
+        )
+        .file("bar/Cargo.toml", &basic_manifest("bar", "0.1.0"))
+        .file("bar/src/lib.rs", "pub fn bar() {}")
+        .file("baz/Cargo.toml", &basic_manifest("baz", "0.1.0"))
+        .file("baz/src/lib.rs", "pub fn baz() { break_the_build(); }")
+        .build();
+
+    p.cargo("doc --workspace --exclude baz")
+        .with_stderr_does_not_contain("[DOCUMENTING] baz v0.1.0 [..]")
+        .with_stderr(
+            "\
+[DOCUMENTING] bar v0.1.0 ([..])
+[FINISHED] dev [unoptimized + debuginfo] target(s) in [..]
+",
+        )
+        .run();
+}
+
+#[cargo_test]
+fn doc_all_exclude_glob() {
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [workspace]
+                members = ["bar", "baz"]
+            "#,
+        )
+        .file("bar/Cargo.toml", &basic_manifest("bar", "0.1.0"))
+        .file("bar/src/lib.rs", "pub fn bar() {}")
+        .file("baz/Cargo.toml", &basic_manifest("baz", "0.1.0"))
+        .file("baz/src/lib.rs", "pub fn baz() { break_the_build(); }")
+        .build();
+
+    p.cargo("doc --workspace --exclude '*z'")
+        .with_stderr_does_not_contain("[DOCUMENTING] baz v0.1.0 [..]")
+        .with_stderr(
+            "\
+[DOCUMENTING] bar v0.1.0 ([..])
 [FINISHED] dev [unoptimized + debuginfo] target(s) in [..]
 ",
         )
@@ -808,8 +880,42 @@ fn features() {
             r#"#[cfg(feature = "bar")] pub fn bar() {}"#,
         )
         .build();
-    p.cargo("doc --features foo").run();
+    p.cargo("doc --features foo")
+        .with_stderr(
+            "\
+[COMPILING] bar v0.0.1 [..]
+[DOCUMENTING] bar v0.0.1 [..]
+[DOCUMENTING] foo v0.0.1 [..]
+[FINISHED] [..]
+",
+        )
+        .run();
     assert!(p.root().join("target/doc").is_dir());
+    assert!(p.root().join("target/doc/foo/fn.foo.html").is_file());
+    assert!(p.root().join("target/doc/bar/fn.bar.html").is_file());
+    // Check that turning the feature off will remove the files.
+    p.cargo("doc")
+        .with_stderr(
+            "\
+[COMPILING] bar v0.0.1 [..]
+[DOCUMENTING] bar v0.0.1 [..]
+[DOCUMENTING] foo v0.0.1 [..]
+[FINISHED] [..]
+",
+        )
+        .run();
+    assert!(!p.root().join("target/doc/foo/fn.foo.html").is_file());
+    assert!(!p.root().join("target/doc/bar/fn.bar.html").is_file());
+    // And switching back will rebuild and bring them back.
+    p.cargo("doc --features foo")
+        .with_stderr(
+            "\
+[DOCUMENTING] bar v0.0.1 [..]
+[DOCUMENTING] foo v0.0.1 [..]
+[FINISHED] [..]
+",
+        )
+        .run();
     assert!(p.root().join("target/doc/foo/fn.foo.html").is_file());
     assert!(p.root().join("target/doc/bar/fn.bar.html").is_file());
 }
@@ -956,6 +1062,60 @@ fn doc_virtual_manifest_all_implied() {
 }
 
 #[cargo_test]
+fn doc_virtual_manifest_one_project() {
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [workspace]
+                members = ["bar", "baz"]
+            "#,
+        )
+        .file("bar/Cargo.toml", &basic_manifest("bar", "0.1.0"))
+        .file("bar/src/lib.rs", "pub fn bar() {}")
+        .file("baz/Cargo.toml", &basic_manifest("baz", "0.1.0"))
+        .file("baz/src/lib.rs", "pub fn baz() { break_the_build(); }")
+        .build();
+
+    p.cargo("doc -p bar")
+        .with_stderr_does_not_contain("[DOCUMENTING] baz v0.1.0 [..]")
+        .with_stderr(
+            "\
+[DOCUMENTING] bar v0.1.0 ([..])
+[FINISHED] dev [unoptimized + debuginfo] target(s) in [..]
+",
+        )
+        .run();
+}
+
+#[cargo_test]
+fn doc_virtual_manifest_glob() {
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [workspace]
+                members = ["bar", "baz"]
+            "#,
+        )
+        .file("bar/Cargo.toml", &basic_manifest("bar", "0.1.0"))
+        .file("bar/src/lib.rs", "pub fn bar() {  break_the_build(); }")
+        .file("baz/Cargo.toml", &basic_manifest("baz", "0.1.0"))
+        .file("baz/src/lib.rs", "pub fn baz() {}")
+        .build();
+
+    p.cargo("doc -p '*z'")
+        .with_stderr_does_not_contain("[DOCUMENTING] bar v0.1.0 [..]")
+        .with_stderr(
+            "\
+[DOCUMENTING] baz v0.1.0 ([..])
+[FINISHED] dev [unoptimized + debuginfo] target(s) in [..]
+",
+        )
+        .run();
+}
+
+#[cargo_test]
 fn doc_all_member_dependency_same_name() {
     let p = project()
         .file(
@@ -1009,7 +1169,42 @@ fn doc_workspace_open_help_message() {
         .env("BROWSER", "echo")
         .with_stderr_contains("[..] Documenting bar v0.1.0 ([..])")
         .with_stderr_contains("[..] Documenting foo v0.1.0 ([..])")
-        .with_stderr_contains("[..] Opening [..]/foo/index.html")
+        .with_stderr_contains("[..] Opening [..]/bar/index.html")
+        .run();
+}
+
+#[cargo_test]
+#[cfg(not(windows))] // `echo` may not be available
+fn doc_extern_map_local() {
+    if !is_nightly() {
+        // -Zextern-html-root-url is unstable
+        return;
+    }
+
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [package]
+                name = "foo"
+                version = "0.1.0"
+            "#,
+        )
+        .file("src/lib.rs", "")
+        .file(".cargo/config.toml", "doc.extern-map.std = 'local'")
+        .build();
+
+    p.cargo("doc -v --no-deps -Zrustdoc-map --open")
+        .env("BROWSER", "echo")
+        .masquerade_as_nightly_cargo()
+        .with_stderr(
+            "\
+[DOCUMENTING] foo v0.1.0 [..]
+[RUNNING] `rustdoc --crate-type lib --crate-name foo src/lib.rs [..]--crate-version 0.1.0`
+[FINISHED] [..]
+     Opening [CWD]/target/doc/foo/index.html
+",
+        )
         .run();
 }
 
@@ -1041,6 +1236,21 @@ fn doc_workspace_open_different_library_and_package_names() {
         .env("BROWSER", "echo")
         .with_stderr_contains("[..] Documenting foo v0.1.0 ([..])")
         .with_stderr_contains("[..] [CWD]/target/doc/foolib/index.html")
+        .with_stdout_contains("[CWD]/target/doc/foolib/index.html")
+        .run();
+
+    p.change_file(
+        ".cargo/config.toml",
+        r#"
+        [doc]
+        browser = ["echo", "a"]
+    "#,
+    );
+
+    // check that the cargo config overrides the browser env var
+    p.cargo("doc --open")
+        .env("BROWSER", "true")
+        .with_stdout_contains("a [CWD]/target/doc/foolib/index.html")
         .run();
 }
 
@@ -1220,7 +1430,7 @@ fn doc_private_ws() {
         .file("a/src/lib.rs", "fn p() {}")
         .file("b/Cargo.toml", &basic_manifest("b", "0.0.1"))
         .file("b/src/lib.rs", "fn p2() {}")
-        .file("b/src/main.rs", "fn main() {}")
+        .file("b/src/bin/b-cli.rs", "fn main() {}")
         .build();
     p.cargo("doc --workspace --bins --lib --document-private-items -v")
         .with_stderr_contains(
@@ -1230,7 +1440,7 @@ fn doc_private_ws() {
             "[RUNNING] `rustdoc [..] b/src/lib.rs [..]--document-private-items[..]",
         )
         .with_stderr_contains(
-            "[RUNNING] `rustdoc [..] b/src/main.rs [..]--document-private-items[..]",
+            "[RUNNING] `rustdoc [..] b/src/bin/b-cli.rs [..]--document-private-items[..]",
         )
         .run();
 }
@@ -1244,10 +1454,6 @@ pub fn foo() {}
 
 #[cargo_test]
 fn doc_cap_lints() {
-    if !is_nightly() {
-        // This can be removed once intra_doc_link_resolution_failure fails on stable.
-        return;
-    }
     let a = git::new("a", |p| {
         p.file("Cargo.toml", &basic_lib_manifest("a"))
             .file("src/lib.rs", BAD_INTRA_LINK_LIB)
@@ -1293,10 +1499,6 @@ fn doc_cap_lints() {
 
 #[cargo_test]
 fn doc_message_format() {
-    if !is_nightly() {
-        // This can be removed once intra_doc_link_resolution_failure fails on stable.
-        return;
-    }
     let p = project().file("src/lib.rs", BAD_INTRA_LINK_LIB).build();
 
     p.cargo("doc --message-format=json")
@@ -1308,11 +1510,12 @@ fn doc_message_format() {
                     "children": "{...}",
                     "code": "{...}",
                     "level": "error",
-                    "message": "[..]",
-                    "rendered": "[..]",
+                    "message": "{...}",
+                    "rendered": "{...}",
                     "spans": "{...}"
                 },
                 "package_id": "foo [..]",
+                "manifest_path": "[..]",
                 "reason": "compiler-message",
                 "target": "{...}"
             }
@@ -1323,10 +1526,6 @@ fn doc_message_format() {
 
 #[cargo_test]
 fn short_message_format() {
-    if !is_nightly() {
-        // This can be removed once intra_doc_link_resolution_failure fails on stable.
-        return;
-    }
     let p = project().file("src/lib.rs", BAD_INTRA_LINK_LIB).build();
     p.cargo("doc --message-format=short")
         .with_status(101)
@@ -1541,4 +1740,311 @@ fn crate_versions_flag_is_overridden() {
 
     p.cargo("rustdoc -- --crate-version 2.0.3").run();
     asserts(output_documentation());
+}
+
+#[cargo_test]
+fn doc_test_in_workspace() {
+    if !is_nightly() {
+        // -Zdoctest-in-workspace is unstable
+        return;
+    }
+
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [workspace]
+                members = [
+                    "crate-a",
+                    "crate-b",
+                ]
+            "#,
+        )
+        .file(
+            "crate-a/Cargo.toml",
+            r#"
+                [project]
+                name = "crate-a"
+                version = "0.1.0"
+            "#,
+        )
+        .file(
+            "crate-a/src/lib.rs",
+            "\
+                //! ```
+                //! assert_eq!(1, 1);
+                //! ```
+            ",
+        )
+        .file(
+            "crate-b/Cargo.toml",
+            r#"
+                [project]
+                name = "crate-b"
+                version = "0.1.0"
+            "#,
+        )
+        .file(
+            "crate-b/src/lib.rs",
+            "\
+                //! ```
+                //! assert_eq!(1, 1);
+                //! ```
+            ",
+        )
+        .build();
+    p.cargo("test -Zdoctest-in-workspace --doc -vv")
+        .masquerade_as_nightly_cargo()
+        .with_stderr_contains("[DOCTEST] crate-a")
+        .with_stdout_contains(
+            "
+running 1 test
+test crate-a/src/lib.rs - (line 1) ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out[..]
+
+",
+        )
+        .with_stderr_contains("[DOCTEST] crate-b")
+        .with_stdout_contains(
+            "
+running 1 test
+test crate-b/src/lib.rs - (line 1) ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out[..]
+
+",
+        )
+        .run();
+}
+
+#[cargo_test]
+fn doc_fingerprint_is_versioning_consistent() {
+    // Random rustc verbose version
+    let old_rustc_verbose_version = format!(
+        "\
+rustc 1.41.1 (f3e1a954d 2020-02-24)
+binary: rustc
+commit-hash: f3e1a954d2ead4e2fc197c7da7d71e6c61bad196
+commit-date: 2020-02-24
+host: {}
+release: 1.41.1
+LLVM version: 9.0
+",
+        rustc_host()
+    );
+
+    // Create the dummy project.
+    let dummy_project = project()
+        .file(
+            "Cargo.toml",
+            r#"
+            [package]
+            name = "foo"
+            version = "1.2.4"
+            authors = []
+        "#,
+        )
+        .file("src/lib.rs", "//! These are the docs!")
+        .build();
+
+    dummy_project.cargo("doc").run();
+
+    let fingerprint: RustDocFingerprint =
+        serde_json::from_str(&dummy_project.read_file("target/.rustdoc_fingerprint.json"))
+            .expect("JSON Serde fail");
+
+    // Check that the fingerprint contains the actual rustc version
+    // which has been used to compile the docs.
+    let output = std::process::Command::new("rustc")
+        .arg("-vV")
+        .output()
+        .expect("Failed to get actual rustc verbose version");
+    assert_eq!(
+        fingerprint.rustc_vv,
+        (String::from_utf8_lossy(&output.stdout).as_ref())
+    );
+
+    // As the test shows above. Now we have generated the `doc/` folder and inside
+    // the rustdoc fingerprint file is located with the correct rustc version.
+    // So we will remove it and create a new fingerprint with an old rustc version
+    // inside it. We will also place a bogus file inside of the `doc/` folder to ensure
+    // it gets removed as we expect on the next doc compilation.
+    dummy_project.change_file(
+        "target/.rustdoc_fingerprint.json",
+        &old_rustc_verbose_version,
+    );
+
+    fs::write(
+        dummy_project.build_dir().join("doc/bogus_file"),
+        String::from("This is a bogus file and should be removed!"),
+    )
+    .expect("Error writing test bogus file");
+
+    // Now if we trigger another compilation, since the fingerprint contains an old version
+    // of rustc, cargo should remove the entire `/doc` folder (including the fingerprint)
+    // and generating another one with the actual version.
+    // It should also remove the bogus file we created above.
+    dummy_project.cargo("doc").run();
+
+    assert!(!dummy_project.build_dir().join("doc/bogus_file").exists());
+
+    let fingerprint: RustDocFingerprint =
+        serde_json::from_str(&dummy_project.read_file("target/.rustdoc_fingerprint.json"))
+            .expect("JSON Serde fail");
+
+    // Check that the fingerprint contains the actual rustc version
+    // which has been used to compile the docs.
+    assert_eq!(
+        fingerprint.rustc_vv,
+        (String::from_utf8_lossy(&output.stdout).as_ref())
+    );
+}
+
+#[cargo_test]
+fn doc_fingerprint_respects_target_paths() {
+    // Random rustc verbose version
+    let old_rustc_verbose_version = format!(
+        "\
+rustc 1.41.1 (f3e1a954d 2020-02-24)
+binary: rustc
+commit-hash: f3e1a954d2ead4e2fc197c7da7d71e6c61bad196
+commit-date: 2020-02-24
+host: {}
+release: 1.41.1
+LLVM version: 9.0
+",
+        rustc_host()
+    );
+
+    // Create the dummy project.
+    let dummy_project = project()
+        .file(
+            "Cargo.toml",
+            r#"
+            [package]
+            name = "foo"
+            version = "1.2.4"
+            authors = []
+        "#,
+        )
+        .file("src/lib.rs", "//! These are the docs!")
+        .build();
+
+    dummy_project.cargo("doc --target").arg(rustc_host()).run();
+
+    let fingerprint: RustDocFingerprint =
+        serde_json::from_str(&dummy_project.read_file("target/.rustdoc_fingerprint.json"))
+            .expect("JSON Serde fail");
+
+    // Check that the fingerprint contains the actual rustc version
+    // which has been used to compile the docs.
+    let output = std::process::Command::new("rustc")
+        .arg("-vV")
+        .output()
+        .expect("Failed to get actual rustc verbose version");
+    assert_eq!(
+        fingerprint.rustc_vv,
+        (String::from_utf8_lossy(&output.stdout).as_ref())
+    );
+
+    // As the test shows above. Now we have generated the `doc/` folder and inside
+    // the rustdoc fingerprint file is located with the correct rustc version.
+    // So we will remove it and create a new fingerprint with an old rustc version
+    // inside it. We will also place a bogus file inside of the `doc/` folder to ensure
+    // it gets removed as we expect on the next doc compilation.
+    dummy_project.change_file(
+        "target/.rustdoc_fingerprint.json",
+        &old_rustc_verbose_version,
+    );
+
+    fs::write(
+        dummy_project
+            .build_dir()
+            .join(rustc_host())
+            .join("doc/bogus_file"),
+        String::from("This is a bogus file and should be removed!"),
+    )
+    .expect("Error writing test bogus file");
+
+    // Now if we trigger another compilation, since the fingerprint contains an old version
+    // of rustc, cargo should remove the entire `/doc` folder (including the fingerprint)
+    // and generating another one with the actual version.
+    // It should also remove the bogus file we created above.
+    dummy_project.cargo("doc --target").arg(rustc_host()).run();
+
+    assert!(!dummy_project
+        .build_dir()
+        .join(rustc_host())
+        .join("doc/bogus_file")
+        .exists());
+
+    let fingerprint: RustDocFingerprint =
+        serde_json::from_str(&dummy_project.read_file("target/.rustdoc_fingerprint.json"))
+            .expect("JSON Serde fail");
+
+    // Check that the fingerprint contains the actual rustc version
+    // which has been used to compile the docs.
+    assert_eq!(
+        fingerprint.rustc_vv,
+        (String::from_utf8_lossy(&output.stdout).as_ref())
+    );
+}
+
+#[cargo_test]
+fn doc_fingerprint_unusual_behavior() {
+    // Checks for some unusual circumstances with clearing the doc directory.
+    if !symlink_supported() {
+        return;
+    }
+    let p = project().file("src/lib.rs", "").build();
+    p.build_dir().mkdir_p();
+    let real_doc = p.root().join("doc");
+    real_doc.mkdir_p();
+    let build_doc = p.build_dir().join("doc");
+    p.symlink(&real_doc, &build_doc);
+    fs::write(real_doc.join("somefile"), "test").unwrap();
+    fs::write(real_doc.join(".hidden"), "test").unwrap();
+    p.cargo("doc").run();
+    // Make sure for the first run, it does not delete any files and does not
+    // break the symlink.
+    assert!(build_doc.join("somefile").exists());
+    assert!(real_doc.join("somefile").exists());
+    assert!(real_doc.join(".hidden").exists());
+    assert!(real_doc.join("foo/index.html").exists());
+    // Pretend that the last build was generated by an older version.
+    p.change_file(
+        "target/.rustdoc_fingerprint.json",
+        "{\"rustc_vv\": \"I am old\"}",
+    );
+    // Change file to trigger a new build.
+    p.change_file("src/lib.rs", "// changed");
+    p.cargo("doc")
+        .with_stderr(
+            "[DOCUMENTING] foo [..]\n\
+             [FINISHED] [..]",
+        )
+        .run();
+    // This will delete somefile, but not .hidden.
+    assert!(!real_doc.join("somefile").exists());
+    assert!(real_doc.join(".hidden").exists());
+    assert!(real_doc.join("foo/index.html").exists());
+    // And also check the -Z flag behavior.
+    p.change_file(
+        "target/.rustdoc_fingerprint.json",
+        "{\"rustc_vv\": \"I am old\"}",
+    );
+    // Change file to trigger a new build.
+    p.change_file("src/lib.rs", "// changed2");
+    fs::write(real_doc.join("somefile"), "test").unwrap();
+    p.cargo("doc -Z skip-rustdoc-fingerprint")
+        .masquerade_as_nightly_cargo()
+        .with_stderr(
+            "[DOCUMENTING] foo [..]\n\
+             [FINISHED] [..]",
+        )
+        .run();
+    // Should not have deleted anything.
+    assert!(build_doc.join("somefile").exists());
+    assert!(real_doc.join("somefile").exists());
 }

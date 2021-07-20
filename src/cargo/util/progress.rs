@@ -4,8 +4,8 @@ use std::time::{Duration, Instant};
 
 use crate::core::shell::Verbosity;
 use crate::util::config::ProgressWhen;
-use crate::util::{is_ci, CargoResult, Config};
-
+use crate::util::{CargoResult, Config};
+use cargo_util::is_ci;
 use unicode_width::UnicodeWidthChar;
 
 pub struct Progress<'cfg> {
@@ -71,7 +71,9 @@ impl<'cfg> Progress<'cfg> {
                 format: Format {
                     style,
                     max_width: n,
-                    max_print: 80,
+                    // 50 gives some space for text after the progress bar,
+                    // even on narrow (e.g. 80 char) terminals.
+                    max_print: 50,
                 },
                 name: name.to_string(),
                 done: false,
@@ -94,7 +96,7 @@ impl<'cfg> Progress<'cfg> {
         Self::with_style(name, ProgressStyle::Percentage, cfg)
     }
 
-    pub fn tick(&mut self, cur: usize, max: usize) -> CargoResult<()> {
+    pub fn tick(&mut self, cur: usize, max: usize, msg: &str) -> CargoResult<()> {
         let s = match &mut self.state {
             Some(s) => s,
             None => return Ok(()),
@@ -116,7 +118,7 @@ impl<'cfg> Progress<'cfg> {
             return Ok(());
         }
 
-        s.tick(cur, max, "")
+        s.tick(cur, max, msg)
     }
 
     pub fn tick_now(&mut self, cur: usize, max: usize, msg: &str) -> CargoResult<()> {
@@ -266,20 +268,20 @@ impl Format {
         // Draw the `===>`
         if hashes > 0 {
             for _ in 0..hashes - 1 {
-                string.push_str("=");
+                string.push('=');
             }
             if cur == max {
-                string.push_str("=");
+                string.push('=');
             } else {
-                string.push_str(">");
+                string.push('>');
             }
         }
 
         // Draw the empty space we have left to do
         for _ in 0..(display_width - hashes) {
-            string.push_str(" ");
+            string.push(' ');
         }
-        string.push_str("]");
+        string.push(']');
         string.push_str(&stats);
 
         Some(string)
@@ -390,6 +392,11 @@ fn test_progress_status() {
     assert_eq!(
         format.progress_status(3, 4, "：每個漢字佔據了兩個字元"),
         Some("[=============>     ] 3/4：每個漢字佔據了...".to_string())
+    );
+    assert_eq!(
+        // handle breaking at middle of character
+        format.progress_status(3, 4, "：-每個漢字佔據了兩個字元"),
+        Some("[=============>     ] 3/4：-每個漢字佔據了...".to_string())
     );
 }
 

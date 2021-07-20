@@ -20,8 +20,10 @@ use super::{
 };
 use crate::core::compiler::CrateType;
 use crate::core::{Edition, Feature, Features, Target};
-use crate::util::errors::{CargoResult, CargoResultExt};
+use crate::util::errors::CargoResult;
 use crate::util::restricted_names;
+
+use anyhow::Context as _;
 
 pub fn targets(
     features: &Features,
@@ -289,7 +291,11 @@ fn clean_bins(
         }
 
         if restricted_names::is_conflicting_artifact_name(&name) {
-            anyhow::bail!("the binary target name `{}` is forbidden", name)
+            anyhow::bail!(
+                "the binary target name `{}` is forbidden, \
+                 it conflicts with with cargo's build directory names",
+                name
+            )
         }
     }
 
@@ -783,11 +789,11 @@ fn configure(features: &Features, toml: &TomlTarget, target: &mut Target) -> Car
     if let Some(edition) = toml.edition.clone() {
         features
             .require(Feature::edition())
-            .chain_err(|| "editions are unstable")?;
+            .with_context(|| "editions are unstable")?;
         target.set_edition(
             edition
                 .parse()
-                .chain_err(|| "failed to parse the `edition` key")?,
+                .with_context(|| "failed to parse the `edition` key")?,
         );
     }
     Ok(())

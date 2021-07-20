@@ -19,7 +19,8 @@ dashes (`--`) are passed to the test binaries and thus to _libtest_ (rustc's
 built in unit-test and micro-benchmarking framework).  If you're passing
 arguments to both Cargo and the binary, the ones after `--` go to the binary,
 the ones before go to Cargo.  For details about libtest's arguments see the
-output of `cargo test -- --help`.
+output of `cargo test -- --help` and check out the rustc book's chapter on
+how tests work at <https://doc.rust-lang.org/rustc/tests/index.html>.
 
 As an example, this will filter for tests with `foo` in their name and run them
 on 3 threads in parallel:
@@ -74,7 +75,7 @@ library in the manifest.
 
 Binary targets are automatically built if there is an integration test or
 benchmark. This allows an integration test to execute the binary to exercise
-and test its behavior. The `CARGO_bin_EXE_<name>`
+and test its behavior. The `CARGO_BIN_EXE_<name>`
 [environment variable](../reference/environment-variables.html#environment-variables-cargo-sets-for-crates)
 is set when the integration test is built so that it can use the
 [`env` macro](https://doc.rust-lang.org/std/macro.env.html) to locate the

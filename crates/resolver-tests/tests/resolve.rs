@@ -1,6 +1,7 @@
 use cargo::core::dependency::DepKind;
-use cargo::core::{enable_nightly_features, Dependency};
-use cargo::util::{is_ci, Config};
+use cargo::core::Dependency;
+use cargo::util::Config;
+use cargo_util::is_ci;
 
 use resolver_tests::{
     assert_contains, assert_same, dep, dep_kind, dep_loc, dep_req, dep_req_kind, loc_names, names,
@@ -55,9 +56,8 @@ proptest! {
     fn prop_minimum_version_errors_the_same(
             PrettyPrintRegistry(input) in registry_strategy(50, 20, 60)
     ) {
-        enable_nightly_features();
-
         let mut config = Config::default().unwrap();
+        config.nightly_features_allowed = true;
         config
             .configure(
                 1,
@@ -87,7 +87,7 @@ proptest! {
             let mres = resolve_with_config(
                 vec![dep_req(&this.name(), &format!("={}", this.version()))],
                 &reg,
-                Some(&config),
+                &config,
             );
 
             prop_assert_eq!(
@@ -228,6 +228,7 @@ proptest! {
 }
 
 #[test]
+#[should_panic(expected = "pub dep")] // The error handling is not yet implemented.
 fn pub_fail() {
     let input = vec![
         pkg!(("a", "0.0.4")),
@@ -552,11 +553,6 @@ fn test_resolving_maximum_version_with_transitive_deps() {
 
 #[test]
 fn test_resolving_minimum_version_with_transitive_deps() {
-    enable_nightly_features(); // -Z minimal-versions
-                               // When the minimal-versions config option is specified then the lowest
-                               // possible version of a package should be selected. "util 1.0.0" can't be
-                               // selected because of the requirements of "bar", so the minimum version
-                               // must be 1.1.1.
     let reg = registry(vec![
         pkg!(("util", "1.2.2")),
         pkg!(("util", "1.0.0")),
@@ -566,6 +562,12 @@ fn test_resolving_minimum_version_with_transitive_deps() {
     ]);
 
     let mut config = Config::default().unwrap();
+    // -Z minimal-versions
+    // When the minimal-versions config option is specified then the lowest
+    // possible version of a package should be selected. "util 1.0.0" can't be
+    // selected because of the requirements of "bar", so the minimum version
+    // must be 1.1.1.
+    config.nightly_features_allowed = true;
     config
         .configure(
             1,
@@ -583,7 +585,7 @@ fn test_resolving_minimum_version_with_transitive_deps() {
     let res = resolve_with_config(
         vec![dep_req("foo", "1.0.0"), dep_req("bar", "1.0.0")],
         &reg,
-        Some(&config),
+        &config,
     )
     .unwrap();
 

@@ -35,19 +35,17 @@ OPTIONS
            Run the specified example.
 
    Feature Selection
-       The feature flags allow you to control the enabled features for the
-       "current" package. The "current" package is the package in the current
-       directory, or the one specified in --manifest-path. If running in the
-       root of a virtual workspace, then the default features are selected for
-       all workspace members, or all features if --all-features is specified.
+       The feature flags allow you to control which features are enabled. When
+       no feature options are given, the default feature is activated for every
+       selected package.
 
-       When no feature options are given, the default feature is activated for
-       every selected package.
+       See the features documentation
+       <https://doc.rust-lang.org/cargo/reference/features.html#command-line-feature-options>
+       for more details.
 
        --features features
-           Space or comma separated list of features to activate. These
-           features only apply to the current directory's package. Features of
-           direct dependencies may be enabled with <dep-name>/<feature-name>
+           Space or comma separated list of features to activate. Features of
+           workspace members may be enabled with package-name/feature-name
            syntax. This flag may be specified multiple times, which enables all
            specified features.
 
@@ -55,8 +53,7 @@ OPTIONS
            Activate all available features of all selected packages.
 
        --no-default-features
-           Do not activate the default feature of the current directory's
-           package.
+           Do not activate the default feature of the selected packages.
 
    Compilation Options
        --target triple
@@ -114,24 +111,28 @@ OPTIONS
            times and consists of comma-separated values. Valid values:
 
            o  human (default): Display in a human-readable text format.
+              Conflicts with short and json.
 
-           o  short: Emit shorter, human-readable text messages.
+           o  short: Emit shorter, human-readable text messages. Conflicts with
+              human and json.
 
            o  json: Emit JSON messages to stdout. See the reference
               <https://doc.rust-lang.org/cargo/reference/external-tools.html#json-messages>
-              for more details.
+              for more details. Conflicts with human and short.
 
            o  json-diagnostic-short: Ensure the rendered field of JSON messages
-              contains the "short" rendering from rustc.
+              contains the "short" rendering from rustc. Cannot be used with
+              human or short.
 
            o  json-diagnostic-rendered-ansi: Ensure the rendered field of JSON
               messages contains embedded ANSI color codes for respecting
-              rustc's default color scheme.
+              rustc's default color scheme. Cannot be used with human or short.
 
            o  json-render-diagnostics: Instruct Cargo to not include rustc
               diagnostics in in JSON messages printed, but instead Cargo itself
               should render the JSON diagnostics coming from rustc. Cargo's own
               JSON diagnostics and others coming from rustc are still emitted.
+              Cannot be used with human or short.
 
    Manifest Options
        --manifest-path path

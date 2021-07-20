@@ -10,8 +10,11 @@ fn manifest_output(readme_value: &str) -> String {
         "wycats@example.com"
     ],
     "categories": [],
+    "default_run": null,
     "name":"foo",
     "readme": {},
+    "homepage": null,
+    "documentation": null,
     "repository": null,
     "version":"0.5.0",
     "id":"foo[..]0.5.0[..](path+file://[..]/foo)",
@@ -26,6 +29,7 @@ fn manifest_output(readme_value: &str) -> String {
     "targets":[{{
         "kind":["bin"],
         "crate_types":["bin"],
+        "doc": true,
         "doctest": false,
         "test": true,
         "edition": "2015",

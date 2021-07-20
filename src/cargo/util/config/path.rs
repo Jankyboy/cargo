@@ -10,6 +10,11 @@ use std::path::PathBuf;
 pub struct ConfigRelativePath(Value<String>);
 
 impl ConfigRelativePath {
+    /// Returns the underlying value.
+    pub fn value(&self) -> &Value<String> {
+        &self.0
+    }
+
     /// Returns the raw underlying configuration value for this key.
     pub fn raw_value(&self) -> &str {
         &self.0.val
@@ -29,8 +34,8 @@ impl ConfigRelativePath {
     /// Values which don't look like a filesystem path (don't contain `/` or
     /// `\`) will be returned as-is, and everything else will fall through to an
     /// absolute path.
-    pub fn resolve_program(self, config: &Config) -> PathBuf {
-        config.string_to_path(self.0.val, &self.0.definition)
+    pub fn resolve_program(&self, config: &Config) -> PathBuf {
+        config.string_to_path(&self.0.val, &self.0.definition)
     }
 }
 

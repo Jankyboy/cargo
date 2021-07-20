@@ -1,7 +1,7 @@
 //! Tests for the `cargo run` command.
 
-use cargo::util::paths::dylib_path_envvar;
 use cargo_test_support::{basic_bin_manifest, basic_lib_manifest, project, Project};
+use cargo_util::paths::dylib_path_envvar;
 
 #[cargo_test]
 fn simple() {
@@ -118,7 +118,7 @@ fn exit_code() {
     );
     if !cfg!(unix) {
         output.push_str(
-            "[ERROR] process didn't exit successfully: `target[..]foo[..]` (exit code: 2)",
+            "[ERROR] process didn't exit successfully: `target[..]foo[..]` (exit [..]: 2)",
         );
     }
     p.cargo("run").with_status(2).with_stderr(output).run();
@@ -140,7 +140,7 @@ fn exit_code_verbose() {
     );
     if !cfg!(unix) {
         output.push_str(
-            "[ERROR] process didn't exit successfully: `target[..]foo[..]` (exit code: 2)",
+            "[ERROR] process didn't exit successfully: `target[..]foo[..]` (exit [..]: 2)",
         );
     }
 
@@ -996,7 +996,16 @@ fn run_multiple_packages() {
         .arg("-p")
         .arg("d3")
         .with_status(101)
-        .with_stderr_contains("[ERROR] package `d3` is not a member of the workspace")
+        .with_stderr_contains("[ERROR] package(s) `d3` not found in workspace [..]")
+        .run();
+
+    cargo()
+        .arg("-p")
+        .arg("d*")
+        .with_status(101)
+        .with_stderr_contains(
+            "[ERROR] `cargo run` does not support glob pattern `d*` on package selection",
+        )
         .run();
 }
 

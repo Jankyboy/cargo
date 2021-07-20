@@ -1,9 +1,11 @@
 use std::io::prelude::*;
 
 use crate::core::{resolver, Resolve, ResolveVersion, Workspace};
-use crate::util::errors::{CargoResult, CargoResultExt};
+use crate::util::errors::CargoResult;
 use crate::util::toml as cargo_toml;
 use crate::util::Filesystem;
+
+use anyhow::Context as _;
 
 pub fn load_pkg_lockfile(ws: &Workspace<'_>) -> CargoResult<Option<Resolve>> {
     if !ws.root().join("Cargo.lock").exists() {
@@ -15,25 +17,25 @@ pub fn load_pkg_lockfile(ws: &Workspace<'_>) -> CargoResult<Option<Resolve>> {
 
     let mut s = String::new();
     f.read_to_string(&mut s)
-        .chain_err(|| format!("failed to read file: {}", f.path().display()))?;
+        .with_context(|| format!("failed to read file: {}", f.path().display()))?;
 
     let resolve = (|| -> CargoResult<Option<Resolve>> {
         let resolve: toml::Value = cargo_toml::parse(&s, f.path(), ws.config())?;
         let v: resolver::EncodableResolve = resolve.try_into()?;
         Ok(Some(v.into_resolve(&s, ws)?))
     })()
-    .chain_err(|| format!("failed to parse lock file at: {}", f.path().display()))?;
+    .with_context(|| format!("failed to parse lock file at: {}", f.path().display()))?;
     Ok(resolve)
 }
 
 /// Generate a toml String of Cargo.lock from a Resolve.
 pub fn resolve_to_string(ws: &Workspace<'_>, resolve: &mut Resolve) -> CargoResult<String> {
-    let (_orig, out, _ws_root) = resolve_to_string_orig(ws, resolve)?;
+    let (_orig, out, _ws_root) = resolve_to_string_orig(ws, resolve);
     Ok(out)
 }
 
 pub fn write_pkg_lockfile(ws: &Workspace<'_>, resolve: &mut Resolve) -> CargoResult<()> {
-    let (orig, mut out, ws_root) = resolve_to_string_orig(ws, resolve)?;
+    let (orig, mut out, ws_root) = resolve_to_string_orig(ws, resolve);
 
     // If the lock file contents haven't changed so don't rewrite it. This is
     // helpful on read-only filesystems.
@@ -44,10 +46,6 @@ pub fn write_pkg_lockfile(ws: &Workspace<'_>, resolve: &mut Resolve) -> CargoRes
     }
 
     if !ws.config().lock_update_allowed() {
-        if ws.config().offline() {
-            anyhow::bail!("can't update in the offline mode");
-        }
-
         let flag = if ws.config().network_allowed() {
             "--locked"
         } else {
@@ -56,8 +54,9 @@ pub fn write_pkg_lockfile(ws: &Workspace<'_>, resolve: &mut Resolve) -> CargoRes
         anyhow::bail!(
             "the lock file {} needs to be updated but {} was passed to prevent this\n\
              If you want to try to generate the lock file without accessing the network, \
-             use the --offline flag.",
+             remove the {} flag and use --offline instead.",
             ws.root().to_path_buf().join("Cargo.lock").display(),
+            flag,
             flag
         );
     }
@@ -80,14 +79,14 @@ pub fn write_pkg_lockfile(ws: &Workspace<'_>, resolve: &mut Resolve) -> CargoRes
             f.write_all(out.as_bytes())?;
             Ok(())
         })
-        .chain_err(|| format!("failed to write {}", ws.root().join("Cargo.lock").display()))?;
+        .with_context(|| format!("failed to write {}", ws.root().join("Cargo.lock").display()))?;
     Ok(())
 }
 
 fn resolve_to_string_orig(
     ws: &Workspace<'_>,
     resolve: &mut Resolve,
-) -> CargoResult<(Option<String>, String, Filesystem)> {
+) -> (Option<String>, String, Filesystem) {
     // Load the original lock file if it exists.
     let ws_root = Filesystem::new(ws.root().to_path_buf());
     let orig = ws_root.open_ro("Cargo.lock", ws.config(), "Cargo.lock file");
@@ -96,8 +95,8 @@ fn resolve_to_string_orig(
         f.read_to_string(&mut s)?;
         Ok(s)
     });
-    let out = serialize_resolve(resolve, orig.as_ref().ok().map(|s| &**s));
-    Ok((orig.ok(), out, ws_root))
+    let out = serialize_resolve(resolve, orig.as_deref().ok());
+    (orig.ok(), out, ws_root)
 }
 
 fn serialize_resolve(resolve: &Resolve, orig: Option<&str>) -> String {
@@ -151,7 +150,7 @@ fn serialize_resolve(resolve: &Resolve, orig: Option<&str>) -> String {
         for entry in list {
             out.push_str("[[patch.unused]]\n");
             emit_package(entry.as_table().unwrap(), &mut out);
-            out.push_str("\n");
+            out.push('\n');
         }
     }
 
@@ -214,7 +213,7 @@ fn emit_package(dep: &toml::value::Table, out: &mut String) {
 
             out.push_str("]\n");
         }
-        out.push_str("\n");
+        out.push('\n');
     } else if dep.contains_key("replace") {
         out.push_str(&format!("replace = {}\n\n", &dep["replace"]));
     }

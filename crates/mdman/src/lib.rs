@@ -50,7 +50,7 @@ pub fn convert(
 ) -> Result<String, Error> {
     let formatter: Box<dyn Formatter + Send + Sync> = match format {
         Format::Man => Box::new(format::man::ManFormatter::new(url)),
-        Format::Md => Box::new(format::md::MdFormatter::new(url, man_map)),
+        Format::Md => Box::new(format::md::MdFormatter::new(man_map)),
         Format::Text => Box::new(format::text::TextFormatter::new(url)),
     };
     let expanded = hbs::expand(file, &*formatter)?;
@@ -96,7 +96,7 @@ fn join_url<'a>(base: Option<&Url>, dest: CowStr<'a>) -> CowStr<'a> {
                 let joined = base_url.join(&dest).unwrap_or_else(|e| {
                     panic!("failed to join URL `{}` to `{}`: {}", dest, base_url, e)
                 });
-                joined.into_string().into()
+                String::from(joined).into()
             }
         }
         None => dest,

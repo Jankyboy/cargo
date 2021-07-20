@@ -1,8 +1,8 @@
 use crate::core::compiler::CompileKind;
 use crate::util::interning::InternedString;
-use crate::util::ProcessBuilder;
 use crate::util::{CargoResult, Config, RustfixDiagnosticServer};
 use anyhow::bail;
+use cargo_util::ProcessBuilder;
 use serde::ser;
 use std::cell::RefCell;
 use std::path::PathBuf;
@@ -37,6 +37,8 @@ pub struct BuildConfig {
     // Note that, although the cmd-line flag name is `out-dir`, in code we use
     // `export_dir`, to avoid confusion with out dir at `target/debug/deps`.
     pub export_dir: Option<PathBuf>,
+    /// `true` to output a future incompatibility report at the end of the build
+    pub future_incompat_report: bool,
 }
 
 impl BuildConfig {
@@ -67,6 +69,9 @@ impl BuildConfig {
             )?;
         }
         let jobs = jobs.or(cfg.jobs).unwrap_or(::num_cpus::get() as u32);
+        if jobs == 0 {
+            anyhow::bail!("jobs may not be 0");
+        }
 
         Ok(BuildConfig {
             requested_kinds,
@@ -80,6 +85,7 @@ impl BuildConfig {
             primary_unit_rustc: None,
             rustfix_diagnostic_server: RefCell::new(None),
             export_dir: None,
+            future_incompat_report: false,
         })
     }
 

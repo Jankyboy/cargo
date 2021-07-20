@@ -185,10 +185,7 @@ impl Shell {
 
     /// Erase from cursor to end of line.
     pub fn err_erase_line(&mut self) {
-        if let ShellOut::Stream {
-            stderr_tty: true, ..
-        } = self.output
-        {
+        if self.err_supports_color() {
             imp::err_erase_line(self);
             self.needs_clear = false;
         }
@@ -326,8 +323,8 @@ impl Shell {
         }
     }
 
-    /// Prints a message and translates ANSI escape code into console colors.
-    pub fn print_ansi(&mut self, message: &[u8]) -> CargoResult<()> {
+    /// Prints a message to stderr and translates ANSI escape code into console colors.
+    pub fn print_ansi_stderr(&mut self, message: &[u8]) -> CargoResult<()> {
         if self.needs_clear {
             self.err_erase_line();
         }
@@ -342,9 +339,28 @@ impl Shell {
         Ok(())
     }
 
-    pub fn print_json<T: serde::ser::Serialize>(&mut self, obj: &T) {
-        let encoded = serde_json::to_string(&obj).unwrap();
+    /// Prints a message to stdout and translates ANSI escape code into console colors.
+    pub fn print_ansi_stdout(&mut self, message: &[u8]) -> CargoResult<()> {
+        if self.needs_clear {
+            self.err_erase_line();
+        }
+        #[cfg(windows)]
+        {
+            if let ShellOut::Stream { stdout, .. } = &mut self.output {
+                ::fwdansi::write_ansi(stdout, message)?;
+                return Ok(());
+            }
+        }
+        self.out().write_all(message)?;
+        Ok(())
+    }
+
+    pub fn print_json<T: serde::ser::Serialize>(&mut self, obj: &T) -> CargoResult<()> {
+        // Path may fail to serialize to JSON ...
+        let encoded = serde_json::to_string(&obj)?;
+        // ... but don't fail due to a closed pipe.
         drop(writeln!(self.out(), "{}", encoded));
+        Ok(())
     }
 }
 

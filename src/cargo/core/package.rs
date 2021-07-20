@@ -1,6 +1,6 @@
 use std::cell::{Cell, Ref, RefCell, RefMut};
 use std::cmp::Ordering;
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt;
 use std::hash;
 use std::mem;
@@ -15,18 +15,18 @@ use curl::multi::{EasyHandle, Multi};
 use lazycell::LazyCell;
 use log::{debug, warn};
 use semver::Version;
-use serde::ser;
 use serde::Serialize;
 
 use crate::core::compiler::{CompileKind, RustcTargetData};
 use crate::core::dependency::DepKind;
+use crate::core::resolver::features::ForceAllTargets;
 use crate::core::resolver::{HasDevUnits, Resolve};
 use crate::core::source::MaybePackage;
 use crate::core::{Dependency, Manifest, PackageId, SourceId, Target};
-use crate::core::{FeatureMap, SourceMap, Summary, Workspace};
+use crate::core::{SourceMap, Summary, Workspace};
 use crate::ops;
 use crate::util::config::PackageCacheLock;
-use crate::util::errors::{CargoResult, CargoResultExt, HttpNot200};
+use crate::util::errors::{CargoResult, HttpNot200};
 use crate::util::interning::InternedString;
 use crate::util::network::Retry;
 use crate::util::{self, internal, Config, Progress, ProgressStyle};
@@ -37,12 +37,11 @@ pub const MANIFEST_PREAMBLE: &str = "\
 # When uploading crates to the registry Cargo will automatically
 # \"normalize\" Cargo.toml files for maximal compatibility
 # with all versions of Cargo and also rewrite `path` dependencies
-# to registry (e.g., crates.io) dependencies
+# to registry (e.g., crates.io) dependencies.
 #
-# If you believe there's an error in this file please file an
-# issue against the rust-lang/cargo repository. If you're
-# editing this file be aware that the upstream Cargo.toml
-# will likely look very different (and much more reasonable)
+# If you are reading this file be aware that the original Cargo.toml
+# will likely look very different (and much more reasonable).
+# See Cargo.toml.orig for the original contents.
 ";
 
 /// Information about a package that is available somewhere in the file system.
@@ -77,82 +76,32 @@ impl PartialOrd for Package {
 
 /// A Package in a form where `Serialize` can be derived.
 #[derive(Serialize)]
-struct SerializedPackage<'a> {
-    name: &'a str,
-    version: &'a Version,
+pub struct SerializedPackage {
+    name: InternedString,
+    version: Version,
     id: PackageId,
-    license: Option<&'a str>,
-    license_file: Option<&'a str>,
-    description: Option<&'a str>,
+    license: Option<String>,
+    license_file: Option<String>,
+    description: Option<String>,
     source: SourceId,
-    dependencies: &'a [Dependency],
-    targets: Vec<&'a Target>,
-    features: &'a FeatureMap,
-    manifest_path: &'a Path,
-    metadata: Option<&'a toml::Value>,
-    publish: Option<&'a Vec<String>>,
-    authors: &'a [String],
-    categories: &'a [String],
-    keywords: &'a [String],
-    readme: Option<&'a str>,
-    repository: Option<&'a str>,
-    edition: &'a str,
-    links: Option<&'a str>,
+    dependencies: Vec<Dependency>,
+    targets: Vec<Target>,
+    features: BTreeMap<InternedString, Vec<InternedString>>,
+    manifest_path: PathBuf,
+    metadata: Option<toml::Value>,
+    publish: Option<Vec<String>>,
+    authors: Vec<String>,
+    categories: Vec<String>,
+    keywords: Vec<String>,
+    readme: Option<String>,
+    repository: Option<String>,
+    homepage: Option<String>,
+    documentation: Option<String>,
+    edition: String,
+    links: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    metabuild: Option<&'a Vec<String>>,
-}
-
-impl ser::Serialize for Package {
-    fn serialize<S>(&self, s: S) -> Result<S::Ok, S::Error>
-    where
-        S: ser::Serializer,
-    {
-        let summary = self.manifest().summary();
-        let package_id = summary.package_id();
-        let manmeta = self.manifest().metadata();
-        let license = manmeta.license.as_deref();
-        let license_file = manmeta.license_file.as_deref();
-        let description = manmeta.description.as_deref();
-        let authors = manmeta.authors.as_ref();
-        let categories = manmeta.categories.as_ref();
-        let keywords = manmeta.keywords.as_ref();
-        let readme = manmeta.readme.as_deref();
-        let repository = manmeta.repository.as_deref();
-        // Filter out metabuild targets. They are an internal implementation
-        // detail that is probably not relevant externally. There's also not a
-        // real path to show in `src_path`, and this avoids changing the format.
-        let targets: Vec<&Target> = self
-            .manifest()
-            .targets()
-            .iter()
-            .filter(|t| t.src_path().is_path())
-            .collect();
-
-        SerializedPackage {
-            name: &*package_id.name(),
-            version: package_id.version(),
-            id: package_id,
-            license,
-            license_file,
-            description,
-            source: summary.source_id(),
-            dependencies: summary.dependencies(),
-            targets,
-            features: summary.features(),
-            manifest_path: self.manifest_path(),
-            metadata: self.manifest().custom_metadata(),
-            authors,
-            categories,
-            keywords,
-            readme,
-            repository,
-            edition: &self.manifest().edition().to_string(),
-            links: self.manifest().links(),
-            metabuild: self.manifest().metabuild(),
-            publish: self.publish().as_ref(),
-        }
-        .serialize(s)
-    }
+    metabuild: Option<Vec<String>>,
+    default_run: Option<String>,
 }
 
 impl Package {
@@ -202,6 +151,10 @@ impl Package {
     pub fn targets(&self) -> &[Target] {
         self.manifest().targets()
     }
+    /// Gets the library crate for this package, if it exists.
+    pub fn library(&self) -> Option<&Target> {
+        self.targets().iter().find(|t| t.is_lib())
+    }
     /// Gets the current package version.
     pub fn version(&self) -> &Version {
         self.package_id().version()
@@ -220,6 +173,10 @@ impl Package {
     /// Returns `true` if this package is a proc-macro.
     pub fn proc_macro(&self) -> bool {
         self.targets().iter().any(|target| target.proc_macro())
+    }
+    /// Gets the package's minimum Rust version.
+    pub fn rust_version(&self) -> Option<&str> {
+        self.manifest().rust_version()
     }
 
     /// Returns `true` if the package uses a custom build script for any target.
@@ -248,6 +205,70 @@ impl Package {
     /// Returns if package should include `Cargo.lock`.
     pub fn include_lockfile(&self) -> bool {
         self.targets().iter().any(|t| t.is_example() || t.is_bin())
+    }
+
+    pub fn serialized(&self, config: &Config) -> SerializedPackage {
+        let summary = self.manifest().summary();
+        let package_id = summary.package_id();
+        let manmeta = self.manifest().metadata();
+        // Filter out metabuild targets. They are an internal implementation
+        // detail that is probably not relevant externally. There's also not a
+        // real path to show in `src_path`, and this avoids changing the format.
+        let targets: Vec<Target> = self
+            .manifest()
+            .targets()
+            .iter()
+            .filter(|t| t.src_path().is_path())
+            .cloned()
+            .collect();
+        let features = if config.cli_unstable().namespaced_features {
+            // Convert Vec<FeatureValue> to Vec<InternedString>
+            summary
+                .features()
+                .iter()
+                .map(|(k, v)| {
+                    (
+                        *k,
+                        v.iter()
+                            .map(|fv| InternedString::new(&fv.to_string()))
+                            .collect(),
+                    )
+                })
+                .collect()
+        } else {
+            self.manifest()
+                .original()
+                .features()
+                .cloned()
+                .unwrap_or_default()
+        };
+
+        SerializedPackage {
+            name: package_id.name(),
+            version: package_id.version().clone(),
+            id: package_id,
+            license: manmeta.license.clone(),
+            license_file: manmeta.license_file.clone(),
+            description: manmeta.description.clone(),
+            source: summary.source_id(),
+            dependencies: summary.dependencies().to_vec(),
+            targets,
+            features,
+            manifest_path: self.manifest_path().to_path_buf(),
+            metadata: self.manifest().custom_metadata().cloned(),
+            authors: manmeta.authors.clone(),
+            categories: manmeta.categories.clone(),
+            keywords: manmeta.keywords.clone(),
+            readme: manmeta.readme.clone(),
+            repository: manmeta.repository.clone(),
+            homepage: manmeta.homepage.clone(),
+            documentation: manmeta.documentation.clone(),
+            edition: self.manifest().edition().to_string(),
+            links: self.manifest().links().map(|s| s.to_owned()),
+            metabuild: self.manifest().metabuild().cloned(),
+            publish: self.publish().as_ref().cloned(),
+            default_run: self.manifest().default_run().map(|s| s.to_owned()),
+        }
     }
 }
 
@@ -400,7 +421,7 @@ impl<'cfg> PackageSet<'cfg> {
         let multiplexing = config.http_config()?.multiplexing.unwrap_or(true);
         multi
             .pipelining(false, multiplexing)
-            .chain_err(|| "failed to enable multiplexing/pipelining in curl")?;
+            .with_context(|| "failed to enable multiplexing/pipelining in curl")?;
 
         // let's not flood crates.io with connections
         multi.set_max_host_connections(2)?;
@@ -418,8 +439,12 @@ impl<'cfg> PackageSet<'cfg> {
         })
     }
 
-    pub fn package_ids<'a>(&'a self) -> impl Iterator<Item = PackageId> + 'a {
+    pub fn package_ids(&self) -> impl Iterator<Item = PackageId> + '_ {
         self.packages.keys().cloned()
+    }
+
+    pub fn packages(&self) -> impl Iterator<Item = &Package> {
+        self.packages.values().filter_map(|p| p.borrow())
     }
 
     pub fn enable_download<'a>(&'a self) -> CargoResult<Downloads<'a, 'cfg>> {
@@ -476,7 +501,8 @@ impl<'cfg> PackageSet<'cfg> {
         root_ids: &[PackageId],
         has_dev_units: HasDevUnits,
         requested_kinds: &[CompileKind],
-        target_data: &RustcTargetData,
+        target_data: &RustcTargetData<'cfg>,
+        force_all_targets: ForceAllTargets,
     ) -> CargoResult<()> {
         fn collect_used_deps(
             used: &mut BTreeSet<PackageId>,
@@ -484,7 +510,8 @@ impl<'cfg> PackageSet<'cfg> {
             pkg_id: PackageId,
             has_dev_units: HasDevUnits,
             requested_kinds: &[CompileKind],
-            target_data: &RustcTargetData,
+            target_data: &RustcTargetData<'_>,
+            force_all_targets: ForceAllTargets,
         ) -> CargoResult<()> {
             if !used.insert(pkg_id) {
                 return Ok(());
@@ -498,12 +525,14 @@ impl<'cfg> PackageSet<'cfg> {
                     // dependencies are used both for target and host. To tighten this
                     // up, this function would need to track "for_host" similar to how
                     // unit dependencies handles it.
-                    let activated = requested_kinds
-                        .iter()
-                        .chain(Some(&CompileKind::Host))
-                        .any(|kind| target_data.dep_platform_activated(dep, *kind));
-                    if !activated {
-                        return false;
+                    if force_all_targets == ForceAllTargets::No {
+                        let activated = requested_kinds
+                            .iter()
+                            .chain(Some(&CompileKind::Host))
+                            .any(|kind| target_data.dep_platform_activated(dep, *kind));
+                        if !activated {
+                            return false;
+                        }
                     }
                     true
                 })
@@ -516,6 +545,7 @@ impl<'cfg> PackageSet<'cfg> {
                     has_dev_units,
                     requested_kinds,
                     target_data,
+                    force_all_targets,
                 )?;
             }
             Ok(())
@@ -534,6 +564,7 @@ impl<'cfg> PackageSet<'cfg> {
                 has_dev_units,
                 requested_kinds,
                 target_data,
+                force_all_targets,
             )?;
         }
         self.get_many(to_download.into_iter())?;
@@ -585,9 +616,8 @@ impl<'a, 'cfg> Downloads<'a, 'cfg> {
     /// eventually be returned from `wait_for_download`. Returns `Some(pkg)` if
     /// the package is ready and doesn't need to be downloaded.
     pub fn start(&mut self, id: PackageId) -> CargoResult<Option<&'a Package>> {
-        Ok(self
-            .start_inner(id)
-            .chain_err(|| format!("failed to download `{}`", id))?)
+        self.start_inner(id)
+            .with_context(|| format!("failed to download `{}`", id))
     }
 
     fn start_inner(&mut self, id: PackageId) -> CargoResult<Option<&'a Package>> {
@@ -611,7 +641,7 @@ impl<'a, 'cfg> Downloads<'a, 'cfg> {
             .ok_or_else(|| internal(format!("couldn't find source for `{}`", id)))?;
         let pkg = source
             .download(id)
-            .chain_err(|| anyhow::format_err!("unable to get packages from source"))?;
+            .with_context(|| "unable to get packages from source")?;
         let (url, descriptor) = match pkg {
             MaybePackage::Ready(pkg) => {
                 debug!("{} doesn't need a download", id);
@@ -785,7 +815,7 @@ impl<'a, 'cfg> Downloads<'a, 'cfg> {
                         }
                         Ok(())
                     })
-                    .chain_err(|| format!("failed to download from `{}`", dl.url))?
+                    .with_context(|| format!("failed to download from `{}`", dl.url))?
             };
             match ret {
                 Some(()) => break (dl, data),
@@ -883,7 +913,7 @@ impl<'a, 'cfg> Downloads<'a, 'cfg> {
                 self.set
                     .multi
                     .perform()
-                    .chain_err(|| "failed to perform http requests")
+                    .with_context(|| "failed to perform http requests")
             })?;
             debug!("handles remaining: {}", n);
             let results = &mut self.results;
@@ -910,7 +940,7 @@ impl<'a, 'cfg> Downloads<'a, 'cfg> {
             self.set
                 .multi
                 .wait(&mut [], timeout)
-                .chain_err(|| "failed to wait on curl `Multi`")?;
+                .with_context(|| "failed to wait on curl `Multi`")?;
         }
     }
 

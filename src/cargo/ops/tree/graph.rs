@@ -3,7 +3,7 @@
 use super::TreeOptions;
 use crate::core::compiler::{CompileKind, RustcTargetData};
 use crate::core::dependency::DepKind;
-use crate::core::resolver::features::{FeaturesFor, RequestedFeatures, ResolvedFeatures};
+use crate::core::resolver::features::{CliFeatures, FeaturesFor, ResolvedFeatures};
 use crate::core::resolver::Resolve;
 use crate::core::{FeatureMap, FeatureValue, Package, PackageId, PackageIdSpec, Workspace};
 use crate::util::interning::InternedString;
@@ -248,16 +248,16 @@ pub fn build<'a>(
     resolve: &Resolve,
     resolved_features: &ResolvedFeatures,
     specs: &[PackageIdSpec],
-    requested_features: &RequestedFeatures,
-    target_data: &RustcTargetData,
+    cli_features: &CliFeatures,
+    target_data: &RustcTargetData<'_>,
     requested_kinds: &[CompileKind],
     package_map: HashMap<PackageId, &'a Package>,
     opts: &TreeOptions,
 ) -> CargoResult<Graph<'a>> {
     let mut graph = Graph::new(package_map);
-    let mut members_with_features = ws.members_with_features(specs, requested_features)?;
+    let mut members_with_features = ws.members_with_features(specs, cli_features)?;
     members_with_features.sort_unstable_by_key(|e| e.0.package_id());
-    for (member, requested_features) in members_with_features {
+    for (member, cli_features) in members_with_features {
         let member_id = member.package_id();
         let features_for = FeaturesFor::from_for_host(member.proc_macro());
         for kind in requested_kinds {
@@ -273,7 +273,7 @@ pub fn build<'a>(
             );
             if opts.graph_features {
                 let fmap = resolve.summary(member_id).features();
-                add_cli_features(&mut graph, member_index, &requested_features, fmap);
+                add_cli_features(&mut graph, member_index, &cli_features, fmap);
             }
         }
     }
@@ -294,7 +294,7 @@ fn add_pkg(
     resolved_features: &ResolvedFeatures,
     package_id: PackageId,
     features_for: FeaturesFor,
-    target_data: &RustcTargetData,
+    target_data: &RustcTargetData<'_>,
     requested_kind: CompileKind,
     opts: &TreeOptions,
 ) -> usize {
@@ -305,7 +305,7 @@ fn add_pkg(
     };
     let node = Node::Package {
         package_id,
-        features: node_features.clone(),
+        features: node_features,
         kind: node_kind,
     };
     if let Some(idx) = graph.index.get(&node) {
@@ -340,13 +340,24 @@ fn add_pkg(
                 if dep.is_optional() {
                     // If the new feature resolver does not enable this
                     // optional dep, then don't use it.
-                    if !node_features.contains(&dep.name_in_toml()) {
+                    if !resolved_features.is_dep_activated(
+                        package_id,
+                        features_for,
+                        dep.name_in_toml(),
+                    ) {
                         return false;
                     }
                 }
                 true
             })
             .collect();
+
+        // This dependency is eliminated from the dependency tree under
+        // the current target and feature set.
+        if deps.is_empty() {
+            continue;
+        }
+
         deps.sort_unstable_by_key(|dep| dep.name_in_toml());
         let dep_pkg = graph.package_map[&dep_id];
 
@@ -381,7 +392,7 @@ fn add_pkg(
                         EdgeKind::Dep(dep.kind()),
                     );
                 }
-                for feature in dep.features() {
+                for feature in dep.features().iter() {
                     add_feature(
                         graph,
                         *feature,
@@ -448,48 +459,65 @@ fn add_feature(
 fn add_cli_features(
     graph: &mut Graph<'_>,
     package_index: usize,
-    requested_features: &RequestedFeatures,
+    cli_features: &CliFeatures,
     feature_map: &FeatureMap,
 ) {
     // NOTE: Recursive enabling of features will be handled by
     // add_internal_features.
 
-    // Create a list of feature names requested on the command-line.
-    let mut to_add: Vec<InternedString> = Vec::new();
-    if requested_features.all_features {
-        to_add.extend(feature_map.keys().copied());
-        // Add optional deps.
-        for (dep_name, deps) in &graph.dep_name_map[&package_index] {
-            if deps.iter().any(|(_idx, is_optional)| *is_optional) {
-                to_add.push(*dep_name);
-            }
-        }
+    // Create a set of feature names requested on the command-line.
+    let mut to_add: HashSet<FeatureValue> = HashSet::new();
+    if cli_features.all_features {
+        to_add.extend(feature_map.keys().map(|feat| FeatureValue::Feature(*feat)));
     } else {
-        if requested_features.uses_default_features {
-            to_add.push(InternedString::new("default"));
+        if cli_features.uses_default_features {
+            to_add.insert(FeatureValue::Feature(InternedString::new("default")));
         }
-        to_add.extend(requested_features.features.iter().copied());
+        to_add.extend(cli_features.features.iter().cloned());
     };
 
     // Add each feature as a node, and mark as "from command-line" in graph.cli_features.
-    for name in to_add {
-        if name.contains('/') {
-            let mut parts = name.splitn(2, '/');
-            let dep_name = InternedString::new(parts.next().unwrap());
-            let feat_name = InternedString::new(parts.next().unwrap());
-            for (dep_index, is_optional) in graph.dep_name_map[&package_index][&dep_name].clone() {
-                if is_optional {
-                    // Activate the optional dep on self.
-                    let index =
-                        add_feature(graph, dep_name, None, package_index, EdgeKind::Feature);
-                    graph.cli_features.insert(index);
-                }
-                let index = add_feature(graph, feat_name, None, dep_index, EdgeKind::Feature);
+    for fv in to_add {
+        match fv {
+            FeatureValue::Feature(feature) => {
+                let index = add_feature(graph, feature, None, package_index, EdgeKind::Feature);
                 graph.cli_features.insert(index);
             }
-        } else {
-            let index = add_feature(graph, name, None, package_index, EdgeKind::Feature);
-            graph.cli_features.insert(index);
+            // This is enforced by CliFeatures.
+            FeatureValue::Dep { .. } => panic!("unexpected cli dep feature {}", fv),
+            FeatureValue::DepFeature {
+                dep_name,
+                dep_feature,
+                weak,
+            } => {
+                let dep_connections = match graph.dep_name_map[&package_index].get(&dep_name) {
+                    // Clone to deal with immutable borrow of `graph`. :(
+                    Some(dep_connections) => dep_connections.clone(),
+                    None => {
+                        // --features bar?/feat where `bar` is not activated should be ignored.
+                        // If this wasn't weak, then this is a bug.
+                        if weak {
+                            continue;
+                        }
+                        panic!(
+                            "missing dep graph connection for CLI feature `{}` for member {:?}\n\
+                             Please file a bug report at https://github.com/rust-lang/cargo/issues",
+                            fv,
+                            graph.nodes.get(package_index)
+                        );
+                    }
+                };
+                for (dep_index, is_optional) in dep_connections {
+                    if is_optional {
+                        // Activate the optional dep on self.
+                        let index =
+                            add_feature(graph, dep_name, None, package_index, EdgeKind::Feature);
+                        graph.cli_features.insert(index);
+                    }
+                    let index = add_feature(graph, dep_feature, None, dep_index, EdgeKind::Feature);
+                    graph.cli_features.insert(index);
+                }
+            }
         }
     }
 }
@@ -542,10 +570,10 @@ fn add_feature_rec(
     };
     for fv in fvs {
         match fv {
-            FeatureValue::Feature(fv_name) | FeatureValue::Crate(fv_name) => {
+            FeatureValue::Feature(dep_name) => {
                 let feat_index = add_feature(
                     graph,
-                    *fv_name,
+                    *dep_name,
                     Some(from),
                     package_index,
                     EdgeKind::Feature,
@@ -553,13 +581,27 @@ fn add_feature_rec(
                 add_feature_rec(
                     graph,
                     resolve,
-                    *fv_name,
+                    *dep_name,
                     package_id,
                     feat_index,
                     package_index,
                 );
             }
-            FeatureValue::CrateFeature(dep_name, fv_name) => {
+            // Dependencies are already shown in the graph as dep edges. I'm
+            // uncertain whether or not this might be confusing in some cases
+            // (like feature `"somefeat" = ["dep:somedep"]`), so maybe in the
+            // future consider explicitly showing this?
+            FeatureValue::Dep { .. } => {}
+            FeatureValue::DepFeature {
+                dep_name,
+                dep_feature,
+                // Note: `weak` is mostly handled when the graph is built in
+                // `is_dep_activated` which is responsible for skipping
+                // unactivated weak dependencies. Here it is only used to
+                // determine if the feature of the dependency name is
+                // activated on self.
+                weak,
+            } => {
                 let dep_indexes = match graph.dep_name_map[&package_index].get(dep_name) {
                     Some(indexes) => indexes.clone(),
                     None => {
@@ -569,14 +611,14 @@ fn add_feature_rec(
                             feature_name,
                             package_id,
                             dep_name,
-                            fv_name
+                            dep_feature
                         );
                         continue;
                     }
                 };
                 for (dep_index, is_optional) in dep_indexes {
                     let dep_pkg_id = graph.package_id_for_index(dep_index);
-                    if is_optional {
+                    if is_optional && !weak {
                         // Activate the optional dep on self.
                         add_feature(
                             graph,
@@ -586,9 +628,21 @@ fn add_feature_rec(
                             EdgeKind::Feature,
                         );
                     }
-                    let feat_index =
-                        add_feature(graph, *fv_name, Some(from), dep_index, EdgeKind::Feature);
-                    add_feature_rec(graph, resolve, *fv_name, dep_pkg_id, feat_index, dep_index);
+                    let feat_index = add_feature(
+                        graph,
+                        *dep_feature,
+                        Some(from),
+                        dep_index,
+                        EdgeKind::Feature,
+                    );
+                    add_feature_rec(
+                        graph,
+                        resolve,
+                        *dep_feature,
+                        dep_pkg_id,
+                        feat_index,
+                        dep_index,
+                    );
                 }
             }
         }

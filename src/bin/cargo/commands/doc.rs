@@ -4,6 +4,8 @@ use cargo::ops::{self, DocOptions};
 
 pub fn cli() -> App {
     subcommand("doc")
+        // subcommand aliases are handled in aliased_command()
+        // .alias("d")
         .about("Build a package's documentation")
         .arg(opt("quiet", "No output printed to stdout").short("q"))
         .arg(opt(
@@ -30,6 +32,7 @@ pub fn cli() -> App {
         .arg_target_dir()
         .arg_manifest_path()
         .arg_message_format()
+        .arg_ignore_rust_version()
         .arg_unit_graph()
         .after_help("Run `cargo help doc` for more detailed information.\n")
 }
@@ -40,7 +43,7 @@ pub fn exec(config: &mut Config, args: &ArgMatches<'_>) -> CliResult {
         deps: !args.is_present("no-deps"),
     };
     let mut compile_opts =
-        args.compile_options(config, mode, Some(&ws), ProfileChecking::Checked)?;
+        args.compile_options(config, mode, Some(&ws), ProfileChecking::Custom)?;
     compile_opts.rustdoc_document_private_items = args.is_present("document-private-items");
 
     let doc_opts = DocOptions {

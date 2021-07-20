@@ -27,7 +27,7 @@ bench = false
 
 ### Binaries
 
-Binary targets are executables programs that can be run after being compiled.
+Binary targets are executable programs that can be run after being compiled.
 The default binary filename is `src/main.rs`, which defaults to the name of
 the package. Additional binaries are stored in the [`src/bin/`
 directory][package layout]. The settings for each binary can be [customized]
@@ -94,11 +94,13 @@ There are two styles of tests within a Cargo project:
   access to its *public* API.
 
 Tests are run with the [`cargo test`] command. By default, Cargo and `rustc`
-use the libtest harness which is responsible for collecting functions
+use the [libtest harness] which is responsible for collecting functions
 annotated with the [`#[test]` attribute][test-attribute] and executing them in
 parallel, reporting the success and failure of each test. See [the `harness`
 field](#the-harness-field) if you want to use a different harness or test
 strategy.
+
+[libtest harness]: ../../rustc/tests/index.html
 
 #### Integration tests
 
@@ -160,7 +162,7 @@ Similarly to tests:
 All of the  `[lib]`, `[[bin]]`, `[[example]]`, `[[test]]`, and `[[bench]]`
 sections in `Cargo.toml` support similar configuration for specifying how a
 target should be built. The double-bracket sections like `[[bin]]` are
-array-of-table of [TOML](https://github.com/toml-lang/toml#array-of-tables),
+[array-of-table of TOML](https://toml.io/en/v1.0.0-rc.3#array-of-tables),
 which means you can write more than one `[[bin]]` section to make several
 executables in your crate. You can only specify one library, so `[lib]` is a
 normal TOML table.

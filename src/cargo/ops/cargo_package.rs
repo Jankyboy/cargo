@@ -5,22 +5,22 @@ use std::io::SeekFrom;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
-use std::time::SystemTime;
-
-use flate2::read::GzDecoder;
-use flate2::{Compression, GzBuilder};
-use log::debug;
-use tar::{Archive, Builder, EntryType, Header};
 
 use crate::core::compiler::{BuildConfig, CompileMode, DefaultExecutor, Executor};
+use crate::core::resolver::CliFeatures;
 use crate::core::{Feature, Shell, Verbosity, Workspace};
 use crate::core::{Package, PackageId, PackageSet, Resolve, Source, SourceId};
 use crate::sources::PathSource;
-use crate::util::errors::{CargoResult, CargoResultExt};
-use crate::util::paths;
+use crate::util::errors::CargoResult;
 use crate::util::toml::TomlManifest;
 use crate::util::{self, restricted_names, Config, FileLock};
 use crate::{drop_println, ops};
+use anyhow::Context as _;
+use cargo_util::paths;
+use flate2::read::GzDecoder;
+use flate2::{Compression, GzBuilder};
+use log::debug;
+use tar::{Archive, Builder, EntryType, Header, HeaderMode};
 
 pub struct PackageOpts<'cfg> {
     pub config: &'cfg Config,
@@ -30,9 +30,7 @@ pub struct PackageOpts<'cfg> {
     pub verify: bool,
     pub jobs: Option<u32>,
     pub targets: Vec<String>,
-    pub features: Vec<String>,
-    pub all_features: bool,
-    pub no_default_features: bool,
+    pub cli_features: CliFeatures,
 }
 
 const VCS_INFO_FILE: &str = ".cargo_vcs_info.json";
@@ -107,7 +105,10 @@ pub fn package(ws: &Workspace<'_>, opts: &PackageOpts<'_>) -> CargoResult<Option
         return Ok(None);
     }
 
-    verify_dependencies(pkg)?;
+    // Check that the package dependencies are safe to deploy.
+    for dep in pkg.dependencies() {
+        super::check_dep_has_version(dep, false)?;
+    }
 
     let filename = format!("{}-{}.crate", pkg.name(), pkg.version());
     let dir = ws.target_dir().join("package");
@@ -125,17 +126,17 @@ pub fn package(ws: &Workspace<'_>, opts: &PackageOpts<'_>) -> CargoResult<Option
         .status("Packaging", pkg.package_id().to_string())?;
     dst.file().set_len(0)?;
     tar(ws, ar_files, dst.file(), &filename)
-        .chain_err(|| anyhow::format_err!("failed to prepare local package for uploading"))?;
+        .with_context(|| "failed to prepare local package for uploading")?;
     if opts.verify {
         dst.seek(SeekFrom::Start(0))?;
-        run_verify(ws, &dst, opts).chain_err(|| "failed to verify package tarball")?
+        run_verify(ws, &dst, opts).with_context(|| "failed to verify package tarball")?
     }
     dst.seek(SeekFrom::Start(0))?;
     {
         let src_path = dst.path();
         let dst_path = dst.parent().join(&filename);
         fs::rename(&src_path, &dst_path)
-            .chain_err(|| "failed to move temporary tarball into final location")?;
+            .with_context(|| "failed to move temporary tarball into final location")?;
     }
     Ok(Some(dst))
 }
@@ -335,21 +336,6 @@ fn check_metadata(pkg: &Package, config: &Config) -> CargoResult<()> {
     Ok(())
 }
 
-// Checks that the package dependencies are safe to deploy.
-fn verify_dependencies(pkg: &Package) -> CargoResult<()> {
-    for dep in pkg.dependencies() {
-        if dep.source_id().is_path() && !dep.specified_req() && dep.is_transitive() {
-            anyhow::bail!(
-                "all path dependencies must have a version specified \
-                 when packaging.\ndependency `{}` does not specify \
-                 a version.",
-                dep.name_in_toml()
-            )
-        }
-    }
-    Ok(())
-}
-
 /// Checks if the package source is in a *git* DVCS repository. If *git*, and
 /// the source is *dirty* (e.g., has uncommitted changes) then `bail!` with an
 /// informative message. Otherwise return the sha1 hash of the current *HEAD*
@@ -396,52 +382,31 @@ fn check_repo_state(
         src_files: &[PathBuf],
         repo: &git2::Repository,
     ) -> CargoResult<Option<String>> {
-        let workdir = repo.workdir().unwrap();
+        // This is a collection of any dirty or untracked files. This covers:
+        // - new/modified/deleted/renamed/type change (index or worktree)
+        // - untracked files (which are "new" worktree files)
+        // - ignored (in case the user has an `include` directive that
+        //   conflicts with .gitignore).
+        let mut dirty_files = Vec::new();
+        collect_statuses(repo, &mut dirty_files)?;
+        // Include each submodule so that the error message can provide
+        // specifically *which* files in a submodule are modified.
+        status_submodules(repo, &mut dirty_files)?;
 
-        let mut sub_repos = Vec::new();
-        open_submodules(repo, &mut sub_repos)?;
-        // Sort so that longest paths are first, to check nested submodules first.
-        sub_repos.sort_unstable_by(|a, b| b.0.as_os_str().len().cmp(&a.0.as_os_str().len()));
-        let submodule_dirty = |path: &Path| -> bool {
-            sub_repos
-                .iter()
-                .filter(|(sub_path, _sub_repo)| path.starts_with(sub_path))
-                .any(|(sub_path, sub_repo)| {
-                    let relative = path.strip_prefix(sub_path).unwrap();
-                    sub_repo
-                        .status_file(relative)
-                        .map(|status| status != git2::Status::CURRENT)
-                        .unwrap_or(false)
-                })
-        };
-
-        let dirty = src_files
+        // Find the intersection of dirty in git, and the src_files that would
+        // be packaged. This is a lazy n^2 check, but seems fine with
+        // thousands of files.
+        let dirty_src_files: Vec<String> = src_files
             .iter()
-            .filter(|file| {
-                let relative = file.strip_prefix(workdir).unwrap();
-                if let Ok(status) = repo.status_file(relative) {
-                    if status == git2::Status::CURRENT {
-                        false
-                    } else if relative.file_name().and_then(|s| s.to_str()).unwrap_or("")
-                        == "Cargo.lock"
-                    {
-                        // It is OK to include this file even if it is ignored.
-                        status != git2::Status::IGNORED
-                    } else {
-                        true
-                    }
-                } else {
-                    submodule_dirty(file)
-                }
-            })
+            .filter(|src_file| dirty_files.iter().any(|path| src_file.starts_with(path)))
             .map(|path| {
                 path.strip_prefix(p.root())
                     .unwrap_or(path)
                     .display()
                     .to_string()
             })
-            .collect::<Vec<_>>();
-        if dirty.is_empty() {
+            .collect();
+        if dirty_src_files.is_empty() {
             let rev_obj = repo.revparse_single("HEAD")?;
             Ok(Some(rev_obj.id().to_string()))
         } else {
@@ -449,23 +414,57 @@ fn check_repo_state(
                 "{} files in the working directory contain changes that were \
                  not yet committed into git:\n\n{}\n\n\
                  to proceed despite this and include the uncommitted changes, pass the `--allow-dirty` flag",
-                dirty.len(),
-                dirty.join("\n")
+                dirty_src_files.len(),
+                dirty_src_files.join("\n")
             )
         }
     }
 
-    /// Helper to recursively open all submodules.
-    fn open_submodules(
+    // Helper to collect dirty statuses for a single repo.
+    fn collect_statuses(
         repo: &git2::Repository,
-        sub_repos: &mut Vec<(PathBuf, git2::Repository)>,
+        dirty_files: &mut Vec<PathBuf>,
+    ) -> CargoResult<()> {
+        let mut status_opts = git2::StatusOptions::new();
+        // Exclude submodules, as they are being handled manually by recursing
+        // into each one so that details about specific files can be
+        // retrieved.
+        status_opts
+            .exclude_submodules(true)
+            .include_ignored(true)
+            .include_untracked(true);
+        let repo_statuses = repo.statuses(Some(&mut status_opts)).with_context(|| {
+            format!(
+                "failed to retrieve git status from repo {}",
+                repo.path().display()
+            )
+        })?;
+        let workdir = repo.workdir().unwrap();
+        let this_dirty = repo_statuses.iter().filter_map(|entry| {
+            let path = entry.path().expect("valid utf-8 path");
+            if path.ends_with("Cargo.lock") && entry.status() == git2::Status::IGNORED {
+                // It is OK to include Cargo.lock even if it is ignored.
+                return None;
+            }
+            // Use an absolute path, so that comparing paths is easier
+            // (particularly with submodules).
+            Some(workdir.join(path))
+        });
+        dirty_files.extend(this_dirty);
+        Ok(())
+    }
+
+    // Helper to collect dirty statuses while recursing into submodules.
+    fn status_submodules(
+        repo: &git2::Repository,
+        dirty_files: &mut Vec<PathBuf>,
     ) -> CargoResult<()> {
         for submodule in repo.submodules()? {
             // Ignore submodules that don't open, they are probably not initialized.
             // If its files are required, then the verification step should fail.
             if let Ok(sub_repo) = submodule.open() {
-                open_submodules(&sub_repo, sub_repos)?;
-                sub_repos.push((sub_repo.workdir().unwrap().to_owned(), sub_repo));
+                status_submodules(&sub_repo, dirty_files)?;
+                collect_statuses(&sub_repo, dirty_files)?;
             }
         }
         Ok(())
@@ -481,7 +480,7 @@ fn tar(
     // Prepare the encoder and its header.
     let filename = Path::new(filename);
     let encoder = GzBuilder::new()
-        .filename(util::path2bytes(filename)?)
+        .filename(paths::path2bytes(filename)?)
         .write(dst, Compression::best());
 
     // Put all package files into a compressed archive.
@@ -504,16 +503,16 @@ fn tar(
         let mut header = Header::new_gnu();
         match contents {
             FileContents::OnDisk(disk_path) => {
-                let mut file = File::open(&disk_path).chain_err(|| {
+                let mut file = File::open(&disk_path).with_context(|| {
                     format!("failed to open for archiving: `{}`", disk_path.display())
                 })?;
-                let metadata = file.metadata().chain_err(|| {
+                let metadata = file.metadata().with_context(|| {
                     format!("could not learn metadata for: `{}`", disk_path.display())
                 })?;
-                header.set_metadata(&metadata);
+                header.set_metadata_in_mode(&metadata, HeaderMode::Deterministic);
                 header.set_cksum();
                 ar.append_data(&mut header, &ar_path, &mut file)
-                    .chain_err(|| {
+                    .with_context(|| {
                         format!("could not archive source file `{}`", disk_path.display())
                     })?;
             }
@@ -525,16 +524,12 @@ fn tar(
                 };
                 header.set_entry_type(EntryType::file());
                 header.set_mode(0o644);
-                header.set_mtime(
-                    SystemTime::now()
-                        .duration_since(SystemTime::UNIX_EPOCH)
-                        .unwrap()
-                        .as_secs(),
-                );
                 header.set_size(contents.len() as u64);
+                // use something nonzero to avoid rust-lang/cargo#9512
+                header.set_mtime(1);
                 header.set_cksum();
                 ar.append_data(&mut header, &ar_path, contents.as_bytes())
-                    .chain_err(|| format!("could not archive source file `{}`", rel_str))?;
+                    .with_context(|| format!("could not archive source file `{}`", rel_str))?;
             }
         }
     }
@@ -681,7 +676,7 @@ fn run_verify(ws: &Workspace<'_>, tar: &FileLock, opts: &PackageOpts<'_>) -> Car
 
     let rustc_args = if pkg
         .manifest()
-        .features()
+        .unstable_features()
         .require(Feature::public_dependency())
         .is_ok()
     {
@@ -697,9 +692,7 @@ fn run_verify(ws: &Workspace<'_>, tar: &FileLock, opts: &PackageOpts<'_>) -> Car
         &ws,
         &ops::CompileOptions {
             build_config: BuildConfig::new(config, opts.jobs, &opts.targets, CompileMode::Build)?,
-            features: opts.features.clone(),
-            no_default_features: opts.no_default_features,
-            all_features: opts.all_features,
+            cli_features: opts.cli_features.clone(),
             spec: ops::Packages::Packages(Vec::new()),
             filter: ops::CompileFilter::Default {
                 required_features_filterable: true,
@@ -708,6 +701,7 @@ fn run_verify(ws: &Workspace<'_>, tar: &FileLock, opts: &PackageOpts<'_>) -> Car
             target_rustc_args: rustc_args,
             local_rustdoc_args: None,
             rustdoc_document_private_items: false,
+            honor_rust_version: true,
         },
         &exec,
     )?;
@@ -749,7 +743,7 @@ fn hash_all(path: &Path) -> CargoResult<HashMap<PathBuf, u64>> {
         }
         Ok(result)
     }
-    let result = wrap(path).chain_err(|| format!("failed to verify output at {:?}", path))?;
+    let result = wrap(path).with_context(|| format!("failed to verify output at {:?}", path))?;
     Ok(result)
 }
 

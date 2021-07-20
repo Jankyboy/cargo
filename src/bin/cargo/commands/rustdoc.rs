@@ -34,6 +34,7 @@ pub fn cli() -> App {
         .arg_manifest_path()
         .arg_message_format()
         .arg_unit_graph()
+        .arg_ignore_rust_version()
         .after_help("Run `cargo help rustdoc` for more detailed information.\n")
 }
 
@@ -43,7 +44,7 @@ pub fn exec(config: &mut Config, args: &ArgMatches<'_>) -> CliResult {
         config,
         CompileMode::Doc { deps: false },
         Some(&ws),
-        ProfileChecking::Checked,
+        ProfileChecking::Custom,
     )?;
     let target_args = values(args, "args");
     compile_opts.target_rustdoc_args = if target_args.is_empty() {

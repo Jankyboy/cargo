@@ -2,13 +2,16 @@ use crate::core::PackageId;
 use crate::sources::registry::{MaybeLock, RegistryConfig, RegistryData};
 use crate::util::errors::CargoResult;
 use crate::util::interning::InternedString;
-use crate::util::paths;
-use crate::util::{Config, Filesystem, Sha256};
+use crate::util::{Config, Filesystem};
+use cargo_util::{paths, Sha256};
 use std::fs::File;
 use std::io::prelude::*;
 use std::io::SeekFrom;
 use std::path::Path;
 
+/// A local registry is a registry that lives on the filesystem as a set of
+/// `.crate` files with an `index` directory in the same format as a remote
+/// registry.
 pub struct LocalRegistry<'cfg> {
     index_path: Filesystem,
     root: Filesystem,

@@ -30,6 +30,14 @@ together. Numbers, strings, and booleans will use the value in the deeper
 config directory taking precedence over ancestor directories, where the
 home directory is the lowest priority. Arrays will be joined together.
 
+At present, when being invoked from a workspace, Cargo does not read config
+files from crates within the workspace. i.e. if a workspace has two crates in
+it, named `/projects/foo/bar/baz/mylib` and `/projects/foo/bar/baz/mybin`, and
+there are Cargo configs at `/projects/foo/bar/baz/mylib/.cargo/config.toml`
+and `/projects/foo/bar/baz/mybin/.cargo/config.toml`, Cargo does not read
+those configuration files if it is invoked from the workspace root
+(`/projects/foo/bar/baz/`).
+
 > **Note:** Cargo also reads config files without the `.toml` extension, such as
 > `.cargo/config`. Support for the `.toml` extension was added in version 1.39
 > and is the preferred form. If both files exist, Cargo will use the file
@@ -54,21 +62,24 @@ rr = "run --release"
 space_example = ["run", "--release", "--", "\"command list\""]
 
 [build]
-jobs = 1                  # number of parallel jobs, defaults to # of CPUs
-rustc = "rustc"           # the rust compiler tool
-rustc-wrapper = "…"       # run this wrapper instead of `rustc`
-rustdoc = "rustdoc"       # the doc generator tool
-target = "triple"         # build for the target triple (ignored by `cargo install`)
-target-dir = "target"     # path of where to place all generated artifacts
-rustflags = ["…", "…"]    # custom flags to pass to all compiler invocations
-rustdocflags = ["…", "…"] # custom flags to pass to rustdoc
-incremental = true        # whether or not to enable incremental compilation
-dep-info-basedir = "…"    # path for the base directory for targets in depfiles
-pipelining = true         # rustc pipelining
+jobs = 1                      # number of parallel jobs, defaults to # of CPUs
+rustc = "rustc"               # the rust compiler tool
+rustc-wrapper = "…"           # run this wrapper instead of `rustc`
+rustc-workspace-wrapper = "…" # run this wrapper instead of `rustc` for workspace members
+rustdoc = "rustdoc"           # the doc generator tool
+target = "triple"             # build for the target triple (ignored by `cargo install`)
+target-dir = "target"         # path of where to place all generated artifacts
+rustflags = ["…", "…"]        # custom flags to pass to all compiler invocations
+rustdocflags = ["…", "…"]     # custom flags to pass to rustdoc
+incremental = true            # whether or not to enable incremental compilation
+dep-info-basedir = "…"        # path for the base directory for targets in depfiles
+pipelining = true             # rustc pipelining
+
+[doc]
+browser = "chromium"          # browser to use with `cargo doc --open`,
+                              # overrides the `BROWSER` environment variable
 
 [cargo-new]
-name = "Your Name"        # name to use in `authors` field
-email = "you@example.com" # email address to use in `authors` field
 vcs = "none"              # VCS to use ('git', 'hg', 'pijul', 'fossil', 'none')
 
 [http]
@@ -95,6 +106,7 @@ offline = false             # do not access the network
 [profile.<name>]         # Modify profile settings via config.
 opt-level = 0            # Optimization level.
 debug = true             # Include debug info.
+split-debuginfo = '...'  # Debug info splitting behavior.
 debug-assertions = true  # Enables debug assertions.
 overflow-checks = true   # Enables runtime integer overflow checks.
 lto = false              # Sets link-time optimization.
@@ -248,6 +260,7 @@ subcommand and arguments. The following aliases are built-in to Cargo:
 [alias]
 b = "build"
 c = "check"
+d = "doc"
 t = "test"
 r = "run"
 ```
@@ -281,6 +294,15 @@ Sets the executable to use for `rustc`.
 
 Sets a wrapper to execute instead of `rustc`. The first argument passed to the
 wrapper is the path to the actual `rustc`.
+
+##### `build.rustc-workspace-wrapper`
+* Type: string (program path)
+* Default: none
+* Environment: `CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER` or `RUSTC_WORKSPACE_WRAPPER`
+
+Sets a wrapper to execute instead of `rustc`, for workspace members only.
+The first argument passed to the wrapper is the path to the actual `rustc`.
+It affects the filename hash so that artifacts produced by the wrapper are cached separately.
 
 ##### `build.rustdoc`
 * Type: string (program path)
@@ -336,6 +358,16 @@ Without `--target`, the flags will be passed to all compiler invocations
 you have args that you do not want to pass to build scripts or proc macros and
 are building for the host, pass `--target` with the host triple.
 
+It is not recommended to pass in flags that Cargo itself usually manages. For
+example, the flags driven by [profiles] are best handled by setting the
+appropriate profile setting.
+
+> **Caution**: Due to the low-level nature of passing flags directly to the
+> compiler, this may cause a conflict with future versions of Cargo which may
+> issue the same or similar flags on its own which may interfere with the
+> flags you specify. This is an area where Cargo may not always be backwards
+> compatible.
+
 ##### `build.rustdocflags`
 * Type: string or array of strings
 * Default: none
@@ -387,30 +419,27 @@ directory.
 Controls whether or not build pipelining is used. This allows Cargo to
 schedule overlapping invocations of `rustc` in parallel when possible.
 
+#### `[doc]`
+
+The `[doc]` table defines options for the [`cargo doc`] command.
+
+##### `doc.browser`
+
+This option sets the browser to be used by [`cargo doc`], overriding the
+`BROWSER` environment variable when opening documentation with the `--open`
+option.
+
 #### `[cargo-new]`
 
 The `[cargo-new]` table defines defaults for the [`cargo new`] command.
 
 ##### `cargo-new.name`
-* Type: string
-* Default: from environment
-* Environment: `CARGO_NAME` or `CARGO_CARGO_NEW_NAME`
 
-Defines the name to use in the `authors` field when creating a new
-`Cargo.toml` file. If not specified in the config, Cargo searches the
-environment or your `git` configuration as described in the [`cargo new`]
-documentation.
+This option is deprecated and unused.
 
 ##### `cargo-new.email`
-* Type: string
-* Default: from environment
-* Environment: `CARGO_EMAIL` or `CARGO_CARGO_NEW_EMAIL`
 
-Defines the email address used in the `authors` field when creating a new
-`Cargo.toml` file. If not specified in the config, Cargo searches the
-environment or your `git` configuration as described in the [`cargo new`]
-documentation. The `email` value may be set to an empty string to prevent
-Cargo from placing an address in the authors field.
+This option is deprecated and unused.
 
 ##### `cargo-new.vcs`
 * Type: string
@@ -607,6 +636,13 @@ See [codegen-units](profiles.md#codegen-units).
 * Environment: `CARGO_PROFILE_<name>_DEBUG`
 
 See [debug](profiles.md#debug).
+
+##### `profile.<name>.split-debuginfo`
+* Type: string
+* Default: See profile docs.
+* Environment: `CARGO_PROFILE_<name>_SPLIT_DEBUGINFO`
+
+See [split-debuginfo](profiles.md#split-debuginfo).
 
 ##### `profile.<name>.debug-assertions`
 * Type: boolean
@@ -925,6 +961,7 @@ Sets the width for progress bar.
 
 [`cargo bench`]: ../commands/cargo-bench.md
 [`cargo login`]: ../commands/cargo-login.md
+[`cargo doc`]: ../commands/cargo-doc.md
 [`cargo new`]: ../commands/cargo-new.md
 [`cargo publish`]: ../commands/cargo-publish.md
 [`cargo run`]: ../commands/cargo-run.md
@@ -937,7 +974,7 @@ Sets the width for progress bar.
 [build scripts]: build-scripts.md
 [`-C linker`]: ../../rustc/codegen-options/index.md#linker
 [override a build script]: build-scripts.md#overriding-build-scripts
-[toml]: https://github.com/toml-lang/toml
+[toml]: https://toml.io/
 [incremental compilation]: profiles.md#incremental
 [profile]: profiles.md
 [libcurl format]: https://ec.haxx.se/usingcurl-proxies.html

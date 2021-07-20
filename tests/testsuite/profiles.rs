@@ -474,6 +474,7 @@ fn thin_lto_works() {
 #[cfg_attr(target_os = "macos", ignore)]
 fn strip_works() {
     if !is_nightly() {
+        // -Zstrip is unstable
         return;
     }
 
@@ -509,6 +510,7 @@ fn strip_works() {
 #[cargo_test]
 fn strip_requires_cargo_feature() {
     if !is_nightly() {
+        // -Zstrip is unstable
         return;
     }
 
@@ -537,14 +539,21 @@ fn strip_requires_cargo_feature() {
 Caused by:
   feature `strip` is required
 
-  consider adding `cargo-features = [\"strip\"]` to the manifest
+  The package requires the Cargo feature called `strip`, but that feature is \
+  not stabilized in this version of Cargo (1.[..]).
+  Consider adding `cargo-features = [\"strip\"]` to the top of Cargo.toml \
+  (above the [package] table) to tell Cargo you are opting in to use this unstable feature.
+  See https://doc.rust-lang.org/nightly/cargo/reference/unstable.html#profile-strip-option \
+  for more information about the status of this feature.
 ",
         )
         .run();
 }
+
 #[cargo_test]
-fn strip_rejects_invalid_option() {
+fn strip_passes_unknown_option_to_rustc() {
     if !is_nightly() {
+        // -Zstrip is unstable
         return;
     }
 
@@ -559,7 +568,7 @@ fn strip_rejects_invalid_option() {
                 version = "0.1.0"
 
                 [profile.release]
-                strip = 'wrong'
+                strip = 'unknown'
             "#,
         )
         .file("src/main.rs", "fn main() {}")
@@ -568,13 +577,77 @@ fn strip_rejects_invalid_option() {
     p.cargo("build --release -v")
         .masquerade_as_nightly_cargo()
         .with_status(101)
-        .with_stderr(
+        .with_stderr_contains(
             "\
-[ERROR] failed to parse manifest at `[CWD]/Cargo.toml`
-
-Caused by:
-  unknown variant `wrong`, expected one of `debuginfo`, `none`, `symbols` for key [..]
+[COMPILING] foo [..]
+[RUNNING] `rustc [..] -Z strip=unknown [..]`
+error: incorrect value `unknown` for debugging option `strip` - either `none`, `debuginfo`, or `symbols` was expected
 ",
         )
+        .run();
+}
+
+#[cargo_test]
+fn strip_accepts_true_to_strip_symbols() {
+    if !is_nightly() {
+        // -Zstrip is unstable
+        return;
+    }
+
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                cargo-features = ["strip"]
+
+                [package]
+                name = "foo"
+                version = "0.1.0"
+
+                [profile.release]
+                strip = true
+            "#,
+        )
+        .file("src/main.rs", "fn main() {}")
+        .build();
+
+    p.cargo("build --release -v")
+        .masquerade_as_nightly_cargo()
+        .with_stderr(
+            "\
+[COMPILING] foo [..]
+[RUNNING] `rustc [..] -Z strip=symbols [..]`
+[FINISHED] [..]
+",
+        )
+        .run();
+}
+
+#[cargo_test]
+fn strip_accepts_false_to_disable_strip() {
+    if !is_nightly() {
+        // -Zstrip is unstable
+        return;
+    }
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                cargo-features = ["strip"]
+
+                [package]
+                name = "foo"
+                version = "0.1.0"
+
+                [profile.release]
+                strip = false
+            "#,
+        )
+        .file("src/main.rs", "fn main() {}")
+        .build();
+
+    p.cargo("build --release -v")
+        .masquerade_as_nightly_cargo()
+        .with_stderr_does_not_contain("-Z strip")
         .run();
 }

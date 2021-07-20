@@ -41,7 +41,7 @@ rearrange the compiled code which may make it harder to use with a debugger.
 
 The valid options are:
 
-* `0`: no optimizations, also turns on [`cfg(debug_assertions)`](#debug-assertions).
+* `0`: no optimizations
 * `1`: basic optimizations
 * `2`: some optimizations
 * `3`: all optimizations
@@ -71,7 +71,27 @@ The valid options are:
 * `1`: line tables only
 * `2` or `true`: full debug info
 
+You may wish to also configure the [`split-debuginfo`](#split-debuginfo) option
+depending on your needs as well.
+
 [`-C debuginfo` flag]: ../../rustc/codegen-options/index.html#debuginfo
+
+#### split-debuginfo
+
+The `split-debuginfo` setting controls the [`-C split-debuginfo` flag] which
+controls whether debug information, if generated, is either placed in the
+executable itself or adjacent to it.
+
+This option is a string and acceptable values are the same as those the
+[compiler accepts][`-C split-debuginfo` flag]. The default value for this option
+is `unpacked` on macOS for profiles that have debug information otherwise
+enabled. Otherwise the default for this option is [documented with rustc][`-C
+split-debuginfo` flag] and is platform-specific. Some options are only
+available on the [nightly channel]. The Cargo default may change in the future
+once more testing has been performed, and support for DWARF is stabilized.
+
+[nightly channel]: ../../book/appendix-07-nightly-rust.html
+[`-C split-debuginfo` flag]: ../../rustc/codegen-options/index.html#split-debuginfo
 
 #### debug-assertions
 
@@ -149,7 +169,7 @@ The `rustc` test harness currently requires `unwind` behavior. See the
 [`panic-abort-tests`] unstable flag which enables `abort` behavior.
 
 Additionally, when using the `abort` strategy and building a test, all of the
-dependencies will also be forced to built with the `unwind` strategy.
+dependencies will also be forced to build with the `unwind` strategy.
 
 [`-C panic` flag]: ../../rustc/codegen-options/index.html#panic
 [`panic-abort-tests`]: unstable.md#panic-abort-tests
@@ -212,6 +232,7 @@ The default settings for the `dev` profile are:
 [profile.dev]
 opt-level = 0
 debug = true
+split-debuginfo = '...'  # Platform-specific.
 debug-assertions = true
 overflow-checks = true
 lto = false
@@ -233,6 +254,7 @@ The default settings for the `release` profile are:
 [profile.release]
 opt-level = 3
 debug = false
+split-debuginfo = '...'  # Platform-specific.
 debug-assertions = false
 overflow-checks = false
 lto = false
@@ -253,6 +275,7 @@ The default settings for the `test` profile are:
 [profile.test]
 opt-level = 0
 debug = 2
+split-debuginfo = '...'  # Platform-specific.
 debug-assertions = true
 overflow-checks = true
 lto = false
@@ -273,6 +296,7 @@ The default settings for the `bench` profile are:
 [profile.bench]
 opt-level = 3
 debug = false
+split-debuginfo = '...'  # Platform-specific.
 debug-assertions = false
 overflow-checks = false
 lto = false

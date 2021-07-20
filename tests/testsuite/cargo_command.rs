@@ -254,21 +254,18 @@ fn override_cargo_home() {
         &my_home.join("config"),
         r#"
             [cargo-new]
-            name = "foo"
-            email = "bar"
-            git = false
+            vcs = "none"
         "#,
     )
     .unwrap();
 
-    cargo_process("new foo")
-        .env("USER", "foo")
-        .env("CARGO_HOME", &my_home)
-        .run();
+    cargo_process("new foo").env("CARGO_HOME", &my_home).run();
 
-    let toml = paths::root().join("foo/Cargo.toml");
-    let contents = fs::read_to_string(&toml).unwrap();
-    assert!(contents.contains(r#"authors = ["foo <bar>"]"#));
+    assert!(!paths::root().join("foo/.git").is_dir());
+
+    cargo_process("new foo2").run();
+
+    assert!(paths::root().join("foo2/.git").is_dir());
 }
 
 #[cargo_test]
@@ -316,7 +313,7 @@ fn cargo_subcommand_args() {
             r#"
                 fn main() {
                     let args: Vec<_> = ::std::env::args().collect();
-                    println!("{:?}", args);
+                    println!("{}", args.join(" "));
                 }
             "#,
         )
@@ -332,9 +329,7 @@ fn cargo_subcommand_args() {
 
     cargo_process("foo bar -v --help")
         .env("PATH", &path)
-        .with_stdout(
-            r#"["[CWD]/cargo-foo/target/debug/cargo-foo[EXE]", "foo", "bar", "-v", "--help"]"#,
-        )
+        .with_stdout("[CWD]/cargo-foo/target/debug/cargo-foo[EXE] foo bar -v --help")
         .run();
 }
 
@@ -365,5 +360,5 @@ fn closed_output_ok() {
         .unwrap();
     let status = child.wait().unwrap();
     assert!(status.success());
-    assert!(s.is_empty(), s);
+    assert!(s.is_empty(), "{}", s);
 }

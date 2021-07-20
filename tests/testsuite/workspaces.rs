@@ -408,7 +408,10 @@ fn invalid_members() {
         .with_status(101)
         .with_stderr(
             "\
-error: failed to read `[..]Cargo.toml`
+[ERROR] failed to load manifest for workspace member `[..]/foo`
+
+Caused by:
+  failed to read `[..]foo/foo/Cargo.toml`
 
 Caused by:
   [..]
@@ -1031,10 +1034,9 @@ fn new_warns_you_this_will_not_work() {
     let p = p.build();
 
     p.cargo("new --lib bar")
-        .env("USER", "foo")
         .with_stderr(
             "\
-warning: compiling this new crate may not work due to invalid workspace configuration
+warning: compiling this new package may not work due to invalid workspace configuration
 
 current package believes it's in a workspace when it's not:
 current: [..]
@@ -1053,10 +1055,9 @@ root: [..]
 fn new_warning_with_corrupt_ws() {
     let p = project().file("Cargo.toml", "asdf").build();
     p.cargo("new bar")
-        .env("USER", "foo")
         .with_stderr(
             "\
-[WARNING] compiling this new crate may not work due to invalid workspace configuration
+[WARNING] compiling this new package may not work due to invalid workspace configuration
 
 failed to parse manifest at `[..]foo/Cargo.toml`
 
@@ -1871,7 +1872,10 @@ fn glob_syntax_invalid_members() {
         .with_status(101)
         .with_stderr(
             "\
-error: failed to read `[..]Cargo.toml`
+[ERROR] failed to load manifest for workspace member `[..]/crates/bar`
+
+Caused by:
+  failed to read `[..]foo/crates/bar/Cargo.toml`
 
 Caused by:
   [..]
@@ -2318,4 +2322,130 @@ Caused by:
 ",
         )
         .run();
+}
+
+#[cargo_test]
+fn member_dep_missing() {
+    // Make sure errors are not suppressed with -q.
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [project]
+                name = "foo"
+                version = "0.1.0"
+
+                [workspace]
+                members = ["bar"]
+            "#,
+        )
+        .file("src/main.rs", "fn main() {}")
+        .file(
+            "bar/Cargo.toml",
+            r#"
+                [project]
+                name = "bar"
+                version = "0.1.0"
+
+                [dependencies]
+                baz = { path = "baz" }
+            "#,
+        )
+        .file("bar/src/main.rs", "fn main() {}")
+        .build();
+
+    p.cargo("build -q")
+        .with_status(101)
+        .with_stderr(
+            "\
+[ERROR] failed to load manifest for workspace member `[..]/bar`
+
+Caused by:
+  failed to load manifest for dependency `baz`
+
+Caused by:
+  failed to read `[..]foo/bar/baz/Cargo.toml`
+
+Caused by:
+  [..]
+",
+        )
+        .run();
+}
+
+#[cargo_test]
+fn simple_primary_package_env_var() {
+    let is_primary_package = r#"
+        #[test]
+        fn verify_primary_package() {{
+            assert!(option_env!("CARGO_PRIMARY_PACKAGE").is_some());
+        }}
+    "#;
+
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [project]
+                name = "foo"
+                version = "0.1.0"
+                authors = []
+
+                [workspace]
+                members = ["bar"]
+            "#,
+        )
+        .file("src/lib.rs", is_primary_package)
+        .file(
+            "bar/Cargo.toml",
+            r#"
+                [project]
+                name = "bar"
+                version = "0.1.0"
+                authors = []
+                workspace = ".."
+            "#,
+        )
+        .file("bar/src/lib.rs", is_primary_package);
+    let p = p.build();
+
+    p.cargo("test").run();
+
+    // Again, this time selecting a specific crate
+    p.cargo("clean").run();
+    p.cargo("test -p bar").run();
+
+    // Again, this time selecting all crates
+    p.cargo("clean").run();
+    p.cargo("test --all").run();
+}
+
+#[cargo_test]
+fn virtual_primary_package_env_var() {
+    let is_primary_package = r#"
+        #[test]
+        fn verify_primary_package() {{
+            assert!(option_env!("CARGO_PRIMARY_PACKAGE").is_some());
+        }}
+    "#;
+
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [workspace]
+                members = ["foo", "bar"]
+            "#,
+        )
+        .file("foo/Cargo.toml", &basic_manifest("foo", "0.1.0"))
+        .file("foo/src/lib.rs", is_primary_package)
+        .file("bar/Cargo.toml", &basic_manifest("bar", "0.1.0"))
+        .file("bar/src/lib.rs", is_primary_package);
+    let p = p.build();
+
+    p.cargo("test").run();
+
+    // Again, this time selecting a specific crate
+    p.cargo("clean").run();
+    p.cargo("test -p foo").run();
 }

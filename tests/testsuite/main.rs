@@ -1,12 +1,9 @@
-#![warn(rust_2018_idioms)] // while we're getting used to 2018
-#![cfg_attr(feature = "deny-warnings", deny(warnings))]
-#![allow(clippy::blacklisted_name)]
-#![allow(clippy::explicit_iter_loop)]
-#![allow(clippy::redundant_closure)]
-#![allow(clippy::blocks_in_if_conditions)] // clippy doesn't agree with rustfmt 😂
-#![allow(clippy::inefficient_to_string)] // this causes suggestions that result in `(*s).to_string()`
+// See src/cargo/lib.rs for notes on these lint settings.
+#![warn(rust_2018_idioms)]
+#![allow(clippy::all)]
 #![warn(clippy::needless_borrow)]
 #![warn(clippy::redundant_clone)]
+#![cfg_attr(feature = "deny-warnings", deny(warnings))]
 
 #[macro_use]
 extern crate cargo_test_macro;
@@ -20,9 +17,12 @@ mod build;
 mod build_plan;
 mod build_script;
 mod build_script_env;
+mod build_script_extra_link_arg;
 mod cache_messages;
 mod cargo_alias_config;
 mod cargo_command;
+mod cargo_config;
+mod cargo_env_config;
 mod cargo_features;
 mod cargo_targets;
 mod cfg;
@@ -34,6 +34,7 @@ mod config;
 mod config_cli;
 mod config_include;
 mod corrupt_git;
+mod credential_process;
 mod cross_compile;
 mod cross_publish;
 mod custom_target;
@@ -45,27 +46,32 @@ mod edition;
 mod error;
 mod features;
 mod features2;
+mod features_namespaced;
 mod fetch;
 mod fix;
 mod freshness;
+mod future_incompat_report;
 mod generate_lockfile;
 mod git;
 mod git_auth;
 mod git_gc;
+mod glob_targets;
 mod help;
 mod init;
 mod install;
 mod install_upgrade;
 mod jobserver;
-mod list_targets;
+mod list_availables;
 mod local_registry;
 mod locate_project;
 mod lockfile_compat;
 mod login;
+mod logout;
 mod lto;
 mod member_discovery;
 mod member_errors;
 mod message_format;
+mod messages;
 mod metabuild;
 mod metadata;
 mod minimal_versions;
@@ -73,6 +79,7 @@ mod multitarget;
 mod net_config;
 mod new;
 mod offline;
+mod old_cargos;
 mod out_dir;
 mod owner;
 mod package;
@@ -98,6 +105,7 @@ mod rename_deps;
 mod replace;
 mod required_features;
 mod run;
+mod rust_version;
 mod rustc;
 mod rustc_info_cache;
 mod rustdoc;
@@ -118,6 +126,7 @@ mod vendor;
 mod verify_project;
 mod version;
 mod warn_on_failure;
+mod weak_dep_features;
 mod workspaces;
 mod yank;
 

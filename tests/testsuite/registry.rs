@@ -1,11 +1,12 @@
 //! Tests for normal registry dependencies.
 
-use cargo::util::paths::remove_dir_all;
-use cargo_test_support::cargo_process;
-use cargo_test_support::git;
+use cargo::core::SourceId;
 use cargo_test_support::paths::{self, CargoPathExt};
 use cargo_test_support::registry::{self, registry_path, Dependency, Package};
-use cargo_test_support::{basic_manifest, project, t};
+use cargo_test_support::{basic_manifest, project};
+use cargo_test_support::{cargo_process, registry::registry_url};
+use cargo_test_support::{git, install::cargo_home, t};
+use cargo_util::paths::remove_dir_all;
 use std::fs::{self, File};
 use std::path::Path;
 
@@ -154,9 +155,10 @@ fn wrong_case() {
         .with_stderr(
             "\
 [UPDATING] [..] index
-error: no matching package named `Init` found
+error: no matching package found
+searched package name: `Init`
+perhaps you meant:      init
 location searched: registry [..]
-perhaps you meant: init
 required by package `foo v0.0.1 ([..])`
 ",
         )
@@ -189,9 +191,10 @@ fn mis_hyphenated() {
         .with_stderr(
             "\
 [UPDATING] [..] index
-error: no matching package named `mis_hyphenated` found
+error: no matching package found
+searched package name: `mis_hyphenated`
+perhaps you meant:      mis-hyphenated
 location searched: registry [..]
-perhaps you meant: mis-hyphenated
 required by package `foo v0.0.1 ([..])`
 ",
         )
@@ -1437,10 +1440,11 @@ fn use_semver_package_incorrectly() {
         .with_status(101)
         .with_stderr(
             "\
-error: no matching package named `a` found
-location searched: [..]
+error: no matching package found
+searched package name: `a`
 prerelease package needs to be specified explicitly
 a = { version = \"0.1.1-alpha.0\" }
+location searched: [..]
 required by package `b v0.1.0 ([..])`
 ",
         )
@@ -1688,119 +1692,6 @@ fn bump_version_dont_update_registry() {
         .with_stderr(
             "\
 [COMPILING] bar v0.6.0 ([..])
-[FINISHED] [..]
-",
-        )
-        .run();
-}
-
-#[cargo_test]
-fn old_version_req() {
-    let p = project()
-        .file(
-            "Cargo.toml",
-            r#"
-                [project]
-                name = "bar"
-                version = "0.5.0"
-                authors = []
-
-                [dependencies]
-                remote = "0.2*"
-            "#,
-        )
-        .file("src/main.rs", "fn main() {}")
-        .build();
-
-    Package::new("remote", "0.2.0").publish();
-
-    p.cargo("build")
-        .with_stderr(
-            "\
-warning: parsed version requirement `0.2*` is no longer valid
-
-Previous versions of Cargo accepted this malformed requirement,
-but it is being deprecated. This was found when parsing the manifest
-of bar 0.5.0, and the correct version requirement is `0.2.*`.
-
-This will soon become a hard error, so it's either recommended to
-update to a fixed version or contact the upstream maintainer about
-this warning.
-
-warning: parsed version requirement `0.2*` is no longer valid
-
-Previous versions of Cargo accepted this malformed requirement,
-but it is being deprecated. This was found when parsing the manifest
-of bar 0.5.0, and the correct version requirement is `0.2.*`.
-
-This will soon become a hard error, so it's either recommended to
-update to a fixed version or contact the upstream maintainer about
-this warning.
-
-[UPDATING] [..]
-[DOWNLOADING] crates ...
-[DOWNLOADED] [..]
-[COMPILING] [..]
-[COMPILING] [..]
-[FINISHED] [..]
-",
-        )
-        .run();
-}
-
-#[cargo_test]
-fn old_version_req_upstream() {
-    let p = project()
-        .file(
-            "Cargo.toml",
-            r#"
-                [project]
-                name = "bar"
-                version = "0.5.0"
-                authors = []
-
-                [dependencies]
-                remote = "0.3"
-            "#,
-        )
-        .file("src/main.rs", "fn main() {}")
-        .build();
-
-    Package::new("remote", "0.3.0")
-        .file(
-            "Cargo.toml",
-            r#"
-                [project]
-                name = "remote"
-                version = "0.3.0"
-                authors = []
-
-                [dependencies]
-                bar = "0.2*"
-            "#,
-        )
-        .file("src/lib.rs", "")
-        .publish();
-    Package::new("bar", "0.2.0").publish();
-
-    p.cargo("build")
-        .with_stderr(
-            "\
-[UPDATING] [..]
-[DOWNLOADING] crates ...
-[DOWNLOADED] [..]
-warning: parsed version requirement `0.2*` is no longer valid
-
-Previous versions of Cargo accepted this malformed requirement,
-but it is being deprecated. This was found when parsing the manifest
-of remote 0.3.0, and the correct version requirement is `0.2.*`.
-
-This will soon become a hard error, so it's either recommended to
-update to a fixed version or contact the upstream maintainer about
-this warning.
-
-[COMPILING] [..]
-[COMPILING] [..]
 [FINISHED] [..]
 ",
         )
@@ -2130,6 +2021,73 @@ Caused by:
 [ERROR] the `registry.index` config value is no longer supported
 Use `[source]` replacement to alter the default index for crates.io.
 ",
+        )
+        .run();
+}
+
+#[cargo_test]
+fn package_lock_inside_package_is_overwritten() {
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [project]
+                name = "foo"
+                version = "0.0.1"
+                authors = []
+
+                [dependencies]
+                bar = ">= 0.0.0"
+            "#,
+        )
+        .file("src/main.rs", "fn main() {}")
+        .build();
+
+    Package::new("bar", "0.0.1")
+        .file("src/lib.rs", "")
+        .file(".cargo-ok", "")
+        .publish();
+
+    p.cargo("build").run();
+
+    let id = SourceId::for_registry(&registry_url()).unwrap();
+    let hash = cargo::util::hex::short_hash(&id);
+    let ok = cargo_home()
+        .join("registry")
+        .join("src")
+        .join(format!("-{}", hash))
+        .join("bar-0.0.1")
+        .join(".cargo-ok");
+
+    assert_eq!(ok.metadata().unwrap().len(), 2);
+}
+
+#[cargo_test]
+fn ignores_unknown_index_version() {
+    // If the version field is not understood, it is ignored.
+    Package::new("bar", "1.0.0").publish();
+    Package::new("bar", "1.0.1").schema_version(9999).publish();
+
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [package]
+                name = "foo"
+                version = "0.1.0"
+
+                [dependencies]
+                bar = "1.0"
+            "#,
+        )
+        .file("src/lib.rs", "")
+        .build();
+
+    p.cargo("tree")
+        .with_stdout(
+            "foo v0.1.0 [..]\n\
+             └── bar v1.0.0\n\
+            ",
         )
         .run();
 }

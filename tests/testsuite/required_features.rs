@@ -294,7 +294,7 @@ fn test_default_features() {
             "\
 [COMPILING] foo v0.0.1 ([CWD])
 [FINISHED] test [unoptimized + debuginfo] target(s) in [..]
-[RUNNING] target/debug/deps/foo-[..][EXE]",
+[RUNNING] [..] (target/debug/deps/foo-[..][EXE])",
         )
         .with_stdout_contains("test test ... ok")
         .run();
@@ -308,7 +308,7 @@ fn test_default_features() {
         .with_stderr(
             "\
 [FINISHED] test [unoptimized + debuginfo] target(s) in [..]
-[RUNNING] target/debug/deps/foo-[..][EXE]",
+[RUNNING] [..] (target/debug/deps/foo-[..][EXE])",
         )
         .with_stdout_contains("test test ... ok")
         .run();
@@ -351,7 +351,7 @@ fn test_arg_features() {
             "\
 [COMPILING] foo v0.0.1 ([CWD])
 [FINISHED] test [unoptimized + debuginfo] target(s) in [..]
-[RUNNING] target/debug/deps/foo-[..][EXE]",
+[RUNNING] [..] (target/debug/deps/foo-[..][EXE])",
         )
         .with_stdout_contains("test test ... ok")
         .run();
@@ -392,7 +392,7 @@ fn test_multiple_required_features() {
             "\
 [COMPILING] foo v0.0.1 ([CWD])
 [FINISHED] test [unoptimized + debuginfo] target(s) in [..]
-[RUNNING] target/debug/deps/foo_2-[..][EXE]",
+[RUNNING] [..] (target/debug/deps/foo_2-[..][EXE])",
         )
         .with_stdout_contains("test test ... ok")
         .run();
@@ -402,8 +402,8 @@ fn test_multiple_required_features() {
             "\
 [COMPILING] foo v0.0.1 ([CWD])
 [FINISHED] test [unoptimized + debuginfo] target(s) in [..]
-[RUNNING] target/debug/deps/foo_1-[..][EXE]
-[RUNNING] target/debug/deps/foo_2-[..][EXE]",
+[RUNNING] [..] (target/debug/deps/foo_1-[..][EXE])
+[RUNNING] [..] (target/debug/deps/foo_2-[..][EXE])",
         )
         .with_stdout_contains_n("test test ... ok", 2)
         .run();
@@ -417,6 +417,7 @@ fn test_multiple_required_features() {
 #[cargo_test]
 fn bench_default_features() {
     if !is_nightly() {
+        // #[bench] is unstable
         return;
     }
 
@@ -456,7 +457,7 @@ fn bench_default_features() {
             "\
 [COMPILING] foo v0.0.1 ([CWD])
 [FINISHED] bench [optimized] target(s) in [..]
-[RUNNING] target/release/deps/foo-[..][EXE]",
+[RUNNING] [..] (target/release/deps/foo-[..][EXE])",
         )
         .with_stdout_contains("test bench ... bench: [..]")
         .run();
@@ -470,7 +471,7 @@ fn bench_default_features() {
         .with_stderr(
             "\
 [FINISHED] bench [optimized] target(s) in [..]
-[RUNNING] target/release/deps/foo-[..][EXE]",
+[RUNNING] [..] (target/release/deps/foo-[..][EXE])",
         )
         .with_stdout_contains("test bench ... bench: [..]")
         .run();
@@ -489,6 +490,7 @@ Consider enabling them by passing, e.g., `--features=\"a\"`
 #[cargo_test]
 fn bench_arg_features() {
     if !is_nightly() {
+        // #[bench] is unstable
         return;
     }
 
@@ -527,7 +529,7 @@ fn bench_arg_features() {
             "\
 [COMPILING] foo v0.0.1 ([CWD])
 [FINISHED] bench [optimized] target(s) in [..]
-[RUNNING] target/release/deps/foo-[..][EXE]",
+[RUNNING] [..] (target/release/deps/foo-[..][EXE])",
         )
         .with_stdout_contains("test bench ... bench: [..]")
         .run();
@@ -536,6 +538,7 @@ fn bench_arg_features() {
 #[cargo_test]
 fn bench_multiple_required_features() {
     if !is_nightly() {
+        // #[bench] is unstable
         return;
     }
 
@@ -592,7 +595,7 @@ fn bench_multiple_required_features() {
             "\
 [COMPILING] foo v0.0.1 ([CWD])
 [FINISHED] bench [optimized] target(s) in [..]
-[RUNNING] target/release/deps/foo_2-[..][EXE]",
+[RUNNING] [..] (target/release/deps/foo_2-[..][EXE])",
         )
         .with_stdout_contains("test bench ... bench: [..]")
         .run();
@@ -602,8 +605,8 @@ fn bench_multiple_required_features() {
             "\
 [COMPILING] foo v0.0.1 ([CWD])
 [FINISHED] bench [optimized] target(s) in [..]
-[RUNNING] target/release/deps/foo_1-[..][EXE]
-[RUNNING] target/release/deps/foo_2-[..][EXE]",
+[RUNNING] [..] (target/release/deps/foo_1-[..][EXE])
+[RUNNING] [..] (target/release/deps/foo_2-[..][EXE])",
         )
         .with_stdout_contains_n("test bench ... bench: [..]", 2)
         .run();
@@ -858,7 +861,7 @@ fn dep_feature_in_toml() {
             "\
 [COMPILING] foo v0.0.1 ([CWD])
 [FINISHED] test [unoptimized + debuginfo] target(s) in [..]
-[RUNNING] target/debug/deps/foo-[..][EXE]",
+[RUNNING] [..] (target/debug/deps/foo-[..][EXE])",
         )
         .with_stdout_contains("test test ... ok")
         .run();
@@ -871,7 +874,7 @@ fn dep_feature_in_toml() {
 [COMPILING] bar v0.0.1 ([CWD]/bar)
 [COMPILING] foo v0.0.1 ([CWD])
 [FINISHED] bench [optimized] target(s) in [..]
-[RUNNING] target/release/deps/foo-[..][EXE]",
+[RUNNING] [..] (target/release/deps/foo-[..][EXE])",
             )
             .with_stdout_contains("test bench ... bench: [..]")
             .run();
@@ -1000,7 +1003,7 @@ Consider enabling them by passing, e.g., `--features=\"bar/a\"`
 [COMPILING] bar v0.0.1 ([CWD]/bar)
 [COMPILING] foo v0.0.1 ([CWD])
 [FINISHED] test [unoptimized + debuginfo] target(s) in [..]
-[RUNNING] target/debug/deps/foo-[..][EXE]",
+[RUNNING] [..] (target/debug/deps/foo-[..][EXE])",
         )
         .with_stdout_contains("test bin_is_built ... ok")
         .run();
@@ -1018,7 +1021,7 @@ Consider enabling them by passing, e.g., `--features=\"bar/a\"`
 [COMPILING] bar v0.0.1 ([CWD]/bar)
 [COMPILING] foo v0.0.1 ([CWD])
 [FINISHED] bench [optimized] target(s) in [..]
-[RUNNING] target/release/deps/foo-[..][EXE]",
+[RUNNING] [..] (target/release/deps/foo-[..][EXE])",
             )
             .with_stdout_contains("test bench ... bench: [..]")
             .run();
@@ -1072,7 +1075,7 @@ fn test_skips_compiling_bin_with_missing_required_features() {
             "\
 [COMPILING] foo v0.0.1 ([CWD])
 [FINISHED] test [unoptimized + debuginfo] target(s) in [..]
-[RUNNING] target/debug/deps/foo-[..][EXE]",
+[RUNNING] [..] (target/debug/deps/foo-[..][EXE])",
         )
         .with_stdout_contains("running 0 tests")
         .run();
@@ -1092,7 +1095,7 @@ error[E0463]: can't find crate for `bar`",
                 "\
 [COMPILING] foo v0.0.1 ([CWD])
 [FINISHED] bench [optimized] target(s) in [..]
-[RUNNING] target/release/deps/foo-[..][EXE]",
+[RUNNING] [..] (target/release/deps/foo-[..][EXE])",
             )
             .with_stdout_contains("running 0 tests")
             .run();
@@ -1167,6 +1170,11 @@ fn run_default_multiple_required_features() {
                 required-features = ["a"]
 
                 [[bin]]
+                name = "foo3"
+                path = "src/foo3.rs"
+                required-features = ["b"]
+
+                [[bin]]
                 name = "foo2"
                 path = "src/foo2.rs"
                 required-features = ["b"]
@@ -1174,6 +1182,7 @@ fn run_default_multiple_required_features() {
         )
         .file("src/lib.rs", "")
         .file("src/foo1.rs", "extern crate foo; fn main() {}")
+        .file("src/foo3.rs", "extern crate foo; fn main() {}")
         .file("src/foo2.rs", "extern crate foo; fn main() {}")
         .build();
 
@@ -1182,7 +1191,7 @@ fn run_default_multiple_required_features() {
         .with_stderr(
             "\
 error: `cargo run` could not determine which binary to run[..]
-available binaries: foo1, foo2",
+available binaries: foo1, foo2, foo3",
         )
         .run();
 }

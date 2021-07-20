@@ -1,16 +1,16 @@
 #![warn(rust_2018_idioms)] // while we're getting used to 2018
-#![allow(clippy::redundant_closure)] // there's a false positive
+#![allow(clippy::all)]
 #![warn(clippy::needless_borrow)]
 #![warn(clippy::redundant_clone)]
 
+use cargo::core::shell::Shell;
+use cargo::util::CliError;
+use cargo::util::{self, closest_msg, command_prelude, CargoResult, CliResult, Config};
+use cargo_util::{ProcessBuilder, ProcessError};
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
-
-use cargo::core::shell::Shell;
-use cargo::util::{self, closest_msg, command_prelude, CargoResult, CliResult, Config};
-use cargo::util::{CliError, ProcessError};
 
 mod cli;
 mod commands;
@@ -22,7 +22,6 @@ fn main() {
     pretty_env_logger::init_custom_env("CARGO_LOG");
     #[cfg(not(feature = "pretty-env-logger"))]
     env_logger::init_from_env("CARGO_LOG");
-    cargo::core::maybe_allow_nightly_features();
 
     let mut config = match Config::default() {
         Ok(cfg) => cfg,
@@ -32,7 +31,7 @@ fn main() {
         }
     };
 
-    let result = match cargo::ops::fix_maybe_exec_rustc() {
+    let result = match cargo::ops::fix_maybe_exec_rustc(&config) {
         Ok(true) => Ok(()),
         Ok(false) => {
             let _token = cargo::util::job::setup();
@@ -49,9 +48,10 @@ fn main() {
 
 /// Table for defining the aliases which come builtin in `Cargo`.
 /// The contents are structured as: `(alias, aliased_command, description)`.
-const BUILTIN_ALIASES: [(&str, &str, &str); 4] = [
+const BUILTIN_ALIASES: [(&str, &str, &str); 5] = [
     ("b", "build", "alias: build"),
     ("c", "check", "alias: check"),
+    ("d", "doc", "alias: doc"),
     ("r", "run", "alias: run"),
     ("t", "test", "alias: test"),
 ];
@@ -76,9 +76,8 @@ fn aliased_command(config: &Config, command: &str) -> CargoResult<Option<Vec<Str
         Err(_) => config.get::<Option<Vec<String>>>(&alias_name)?,
     };
 
-    let result = user_alias.or_else(|| match builtin_aliases_execs(command) {
-        Some(command_str) => Some(vec![command_str.1.to_string()]),
-        None => None,
+    let result = user_alias.or_else(|| {
+        builtin_aliases_execs(command).map(|command_str| vec![command_str.1.to_string()])
     });
     Ok(result)
 }
@@ -161,7 +160,7 @@ fn execute_external_subcommand(config: &Config, cmd: &str, args: &[&str]) -> Cli
     };
 
     let cargo_exe = config.cargo_exe()?;
-    let err = match util::process(&command)
+    let err = match ProcessBuilder::new(&command)
         .env(cargo::CARGO_ENV, cargo_exe)
         .args(args)
         .exec_replace()
@@ -171,7 +170,7 @@ fn execute_external_subcommand(config: &Config, cmd: &str, args: &[&str]) -> Cli
     };
 
     if let Some(perr) = err.downcast_ref::<ProcessError>() {
-        if let Some(code) = perr.exit.as_ref().and_then(|c| c.code()) {
+        if let Some(code) = perr.code {
             return Err(CliError::code(code));
         }
     }

@@ -1,17 +1,20 @@
 //! Tests for dep-info files. This includes the dep-info file Cargo creates in
 //! the output directory, and the ones stored in the fingerprint.
 
+use cargo_test_support::compare::assert_match_exact;
 use cargo_test_support::paths::{self, CargoPathExt};
 use cargo_test_support::registry::Package;
 use cargo_test_support::{
     basic_bin_manifest, basic_manifest, is_nightly, main_file, project, rustc_host, Project,
 };
 use filetime::FileTime;
+use std::convert::TryInto;
 use std::fs;
 use std::path::Path;
 use std::str;
 
 // Helper for testing dep-info files in the fingerprint dir.
+#[track_caller]
 fn assert_deps(project: &Project, fingerprint: &str, test_cb: impl Fn(&Path, &[(u8, &str)])) {
     let mut files = project
         .glob(fingerprint)
@@ -37,10 +40,8 @@ fn assert_deps(project: &Project, fingerprint: &str, test_cb: impl Fn(&Path, &[(
     fn read_usize(bytes: &mut &[u8]) -> usize {
         let ret = &bytes[..4];
         *bytes = &bytes[4..];
-        (ret[0] as usize)
-            | ((ret[1] as usize) << 8)
-            | ((ret[2] as usize) << 16)
-            | ((ret[3] as usize) << 24)
+
+        u32::from_le_bytes(ret.try_into().unwrap()) as usize
     }
 
     fn read_u8(bytes: &mut &[u8]) -> u8 {
@@ -50,7 +51,7 @@ fn assert_deps(project: &Project, fingerprint: &str, test_cb: impl Fn(&Path, &[(
     }
 
     fn read_bytes<'a>(bytes: &mut &'a [u8]) -> &'a [u8] {
-        let n = read_usize(bytes) as usize;
+        let n = read_usize(bytes);
         let ret = &bytes[..n];
         *bytes = &bytes[n..];
         ret
@@ -177,6 +178,42 @@ fn build_dep_info_dylib() {
 }
 
 #[cargo_test]
+fn dep_path_inside_target_has_correct_path() {
+    let p = project()
+        .file("Cargo.toml", &basic_bin_manifest("a"))
+        .file("target/debug/blah", "")
+        .file(
+            "src/main.rs",
+            r#"
+                fn main() {
+                    let x = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/target/debug/blah"));
+                }
+            "#,
+        )
+        .build();
+
+    p.cargo("build").run();
+
+    let depinfo_path = &p.bin("a").with_extension("d");
+
+    assert!(depinfo_path.is_file(), "{:?}", depinfo_path);
+
+    let depinfo = p.read_file(depinfo_path.to_str().unwrap());
+
+    let bin_path = p.bin("a");
+    let target_debug_blah = Path::new("target").join("debug").join("blah");
+    if !depinfo.lines().any(|line| {
+        line.starts_with(&format!("{}:", bin_path.display()))
+            && line.contains(target_debug_blah.to_str().unwrap())
+    }) {
+        panic!(
+            "Could not find {:?}: {:?} in {:?}",
+            bin_path, target_debug_blah, depinfo_path
+        );
+    }
+}
+
+#[cargo_test]
 fn no_rewrite_if_no_change() {
     let p = project().file("src/lib.rs", "").build();
 
@@ -195,7 +232,7 @@ fn no_rewrite_if_no_change() {
 #[cargo_test]
 fn relative_depinfo_paths_ws() {
     if !is_nightly() {
-        // See https://github.com/rust-lang/rust/issues/63012
+        // -Z binary-dep-depinfo is unstable (https://github.com/rust-lang/rust/issues/63012)
         return;
     }
 
@@ -333,7 +370,7 @@ fn relative_depinfo_paths_ws() {
 #[cargo_test]
 fn relative_depinfo_paths_no_ws() {
     if !is_nightly() {
-        // See https://github.com/rust-lang/rust/issues/63012
+        // -Z binary-dep-depinfo is unstable (https://github.com/rust-lang/rust/issues/63012)
         return;
     }
 
@@ -500,7 +537,7 @@ fn reg_dep_source_not_tracked() {
 #[cargo_test]
 fn canonical_path() {
     if !is_nightly() {
-        // See https://github.com/rust-lang/rust/issues/63012
+        // -Z binary-dep-depinfo is unstable (https://github.com/rust-lang/rust/issues/63012)
         return;
     }
     if !cargo_test_support::symlink_supported() {
@@ -537,5 +574,42 @@ fn canonical_path() {
         &p,
         "target/debug/.fingerprint/foo-*/dep-lib-foo",
         &[(0, "src/lib.rs"), (1, "debug/deps/libregdep-*.rmeta")],
+    );
+}
+
+#[cargo_test]
+fn non_local_build_script() {
+    // Non-local build script information is not included.
+    Package::new("bar", "1.0.0")
+        .file(
+            "build.rs",
+            r#"
+                fn main() {
+                    println!("cargo:rerun-if-changed=build.rs");
+                }
+            "#,
+        )
+        .file("src/lib.rs", "")
+        .publish();
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [package]
+                name = "foo"
+                version = "0.1.0"
+
+                [dependencies]
+                bar = "1.0"
+            "#,
+        )
+        .file("src/main.rs", "fn main() {}")
+        .build();
+
+    p.cargo("build").run();
+    let contents = p.read_file("target/debug/foo.d");
+    assert_match_exact(
+        "[ROOT]/foo/target/debug/foo[EXE]: [ROOT]/foo/src/main.rs",
+        &contents,
     );
 }

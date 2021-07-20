@@ -42,7 +42,7 @@ fn cargo_test_simple() {
             "\
 [COMPILING] foo v0.5.0 ([CWD])
 [FINISHED] test [unoptimized + debuginfo] target(s) in [..]
-[RUNNING] target/debug/deps/foo-[..][EXE]",
+[RUNNING] [..] (target/debug/deps/foo-[..][EXE])",
         )
         .with_stdout_contains("test test_hello ... ok")
         .run();
@@ -175,7 +175,7 @@ fn cargo_test_quiet_with_harness() {
             "
 running 1 test
 .
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out[..]
 
 ",
         )
@@ -309,7 +309,7 @@ fn cargo_test_failing_test_in_bin() {
             "\
 [COMPILING] foo v0.5.0 ([CWD])
 [FINISHED] test [unoptimized + debuginfo] target(s) in [..]
-[RUNNING] target/debug/deps/foo-[..][EXE]
+[RUNNING] [..] (target/debug/deps/foo-[..][EXE])
 [ERROR] test failed, to rerun pass '--bin foo'",
         )
         .with_stdout_contains(
@@ -357,8 +357,8 @@ fn cargo_test_failing_test_in_test() {
             "\
 [COMPILING] foo v0.5.0 ([CWD])
 [FINISHED] test [unoptimized + debuginfo] target(s) in [..]
-[RUNNING] target/debug/deps/foo-[..][EXE]
-[RUNNING] target/debug/deps/footest-[..][EXE]
+[RUNNING] [..] (target/debug/deps/foo-[..][EXE])
+[RUNNING] [..] (target/debug/deps/footest-[..][EXE])
 [ERROR] test failed, to rerun pass '--test footest'",
         )
         .with_stdout_contains("running 0 tests")
@@ -396,7 +396,7 @@ fn cargo_test_failing_test_in_lib() {
             "\
 [COMPILING] foo v0.5.0 ([CWD])
 [FINISHED] test [unoptimized + debuginfo] target(s) in [..]
-[RUNNING] target/debug/deps/foo-[..][EXE]
+[RUNNING] [..] (target/debug/deps/foo-[..][EXE])
 [ERROR] test failed, to rerun pass '--lib'",
         )
         .with_stdout_contains(
@@ -470,8 +470,8 @@ fn test_with_lib_dep() {
             "\
 [COMPILING] foo v0.0.1 ([CWD])
 [FINISHED] test [unoptimized + debuginfo] target(s) in [..]
-[RUNNING] target/debug/deps/foo-[..][EXE]
-[RUNNING] target/debug/deps/baz-[..][EXE]
+[RUNNING] [..] (target/debug/deps/foo-[..][EXE])
+[RUNNING] [..] (target/debug/deps/baz-[..][EXE])
 [DOCTEST] foo",
         )
         .with_stdout_contains("test lib_test ... ok")
@@ -524,7 +524,7 @@ fn test_with_deep_lib_dep() {
 [COMPILING] bar v0.0.1 ([..])
 [COMPILING] foo v0.0.1 ([CWD])
 [FINISHED] test [unoptimized + debuginfo] target(s) in [..]
-[RUNNING] target[..]
+[RUNNING] [..] (target[..])
 [DOCTEST] foo",
         )
         .with_stdout_contains("test bar_test ... ok")
@@ -573,8 +573,8 @@ fn external_test_explicit() {
             "\
 [COMPILING] foo v0.0.1 ([CWD])
 [FINISHED] test [unoptimized + debuginfo] target(s) in [..]
-[RUNNING] target/debug/deps/foo-[..][EXE]
-[RUNNING] target/debug/deps/test-[..][EXE]
+[RUNNING] [..] (target/debug/deps/foo-[..][EXE])
+[RUNNING] [..] (target/debug/deps/test-[..][EXE])
 [DOCTEST] foo",
         )
         .with_stdout_contains("test internal_test ... ok")
@@ -633,8 +633,8 @@ fn external_test_implicit() {
             "\
 [COMPILING] foo v0.0.1 ([CWD])
 [FINISHED] test [unoptimized + debuginfo] target(s) in [..]
-[RUNNING] target/debug/deps/foo-[..][EXE]
-[RUNNING] target/debug/deps/external-[..][EXE]
+[RUNNING] [..] (target/debug/deps/foo-[..][EXE])
+[RUNNING] [..] (target/debug/deps/external-[..][EXE])
 [DOCTEST] foo",
         )
         .with_stdout_contains("test internal_test ... ok")
@@ -674,7 +674,7 @@ fn pass_through_command_line() {
             "\
 [COMPILING] foo v0.0.1 ([CWD])
 [FINISHED] test [unoptimized + debuginfo] target(s) in [..]
-[RUNNING] target/debug/deps/foo-[..][EXE]
+[RUNNING] [..] (target/debug/deps/foo-[..][EXE])
 ",
         )
         .with_stdout_contains("running 1 test")
@@ -685,7 +685,7 @@ fn pass_through_command_line() {
         .with_stderr(
             "\
 [FINISHED] test [unoptimized + debuginfo] target(s) in [..]
-[RUNNING] target/debug/deps/foo-[..][EXE]
+[RUNNING] [..] (target/debug/deps/foo-[..][EXE])
 ",
         )
         .with_stdout_contains("running 1 test")
@@ -750,8 +750,8 @@ fn lib_bin_same_name() {
             "\
 [COMPILING] foo v0.0.1 ([CWD])
 [FINISHED] test [unoptimized + debuginfo] target(s) in [..]
-[RUNNING] target/debug/deps/foo-[..][EXE]
-[RUNNING] target/debug/deps/foo-[..][EXE]
+[RUNNING] [..] (target/debug/deps/foo-[..][EXE])
+[RUNNING] [..] (target/debug/deps/foo-[..][EXE])
 [DOCTEST] foo",
         )
         .with_stdout_contains_n("test [..] ... ok", 2)
@@ -791,8 +791,8 @@ fn lib_with_standard_name() {
             "\
 [COMPILING] syntax v0.0.1 ([CWD])
 [FINISHED] test [unoptimized + debuginfo] target(s) in [..]
-[RUNNING] target/debug/deps/syntax-[..][EXE]
-[RUNNING] target/debug/deps/test-[..][EXE]
+[RUNNING] [..] (target/debug/deps/syntax-[..][EXE])
+[RUNNING] [..] (target/debug/deps/test-[..][EXE])
 [DOCTEST] syntax",
         )
         .with_stdout_contains("test foo_test ... ok")
@@ -837,7 +837,7 @@ fn lib_with_standard_name2() {
             "\
 [COMPILING] syntax v0.0.1 ([CWD])
 [FINISHED] test [unoptimized + debuginfo] target(s) in [..]
-[RUNNING] target/debug/deps/syntax-[..][EXE]",
+[RUNNING] [..] (target/debug/deps/syntax-[..][EXE])",
         )
         .with_stdout_contains("test test ... ok")
         .run();
@@ -878,7 +878,7 @@ fn lib_without_name() {
             "\
 [COMPILING] syntax v0.0.1 ([CWD])
 [FINISHED] test [unoptimized + debuginfo] target(s) in [..]
-[RUNNING] target/debug/deps/syntax-[..][EXE]",
+[RUNNING] [..] (target/debug/deps/syntax-[..][EXE])",
         )
         .with_stdout_contains("test test ... ok")
         .run();
@@ -1190,8 +1190,8 @@ fn test_dylib() {
 [COMPILING] bar v0.0.1 ([CWD]/bar)
 [COMPILING] foo v0.0.1 ([CWD])
 [FINISHED] test [unoptimized + debuginfo] target(s) in [..]
-[RUNNING] target/debug/deps/foo-[..][EXE]
-[RUNNING] target/debug/deps/test-[..][EXE]",
+[RUNNING] [..] (target/debug/deps/foo-[..][EXE])
+[RUNNING] [..] (target/debug/deps/test-[..][EXE])",
         )
         .with_stdout_contains_n("test foo ... ok", 2)
         .run();
@@ -1201,8 +1201,8 @@ fn test_dylib() {
         .with_stderr(
             "\
 [FINISHED] test [unoptimized + debuginfo] target(s) in [..]
-[RUNNING] target/debug/deps/foo-[..][EXE]
-[RUNNING] target/debug/deps/test-[..][EXE]",
+[RUNNING] [..] (target/debug/deps/foo-[..][EXE])
+[RUNNING] [..] (target/debug/deps/test-[..][EXE])",
         )
         .with_stdout_contains_n("test foo ... ok", 2)
         .run();
@@ -1230,7 +1230,7 @@ fn test_twice_with_build_cmd() {
             "\
 [COMPILING] foo v0.0.1 ([CWD])
 [FINISHED] test [unoptimized + debuginfo] target(s) in [..]
-[RUNNING] target/debug/deps/foo-[..][EXE]
+[RUNNING] [..] (target/debug/deps/foo-[..][EXE])
 [DOCTEST] foo",
         )
         .with_stdout_contains("test foo ... ok")
@@ -1241,7 +1241,7 @@ fn test_twice_with_build_cmd() {
         .with_stderr(
             "\
 [FINISHED] test [unoptimized + debuginfo] target(s) in [..]
-[RUNNING] target/debug/deps/foo-[..][EXE]
+[RUNNING] [..] (target/debug/deps/foo-[..][EXE])
 [DOCTEST] foo",
         )
         .with_stdout_contains("test foo ... ok")
@@ -1258,7 +1258,7 @@ fn test_then_build() {
             "\
 [COMPILING] foo v0.0.1 ([CWD])
 [FINISHED] test [unoptimized + debuginfo] target(s) in [..]
-[RUNNING] target/debug/deps/foo-[..][EXE]
+[RUNNING] [..] (target/debug/deps/foo-[..][EXE])
 [DOCTEST] foo",
         )
         .with_stdout_contains("test foo ... ok")
@@ -1313,7 +1313,7 @@ fn test_run_specific_bin_target() {
             "\
 [COMPILING] foo v0.0.1 ([CWD])
 [FINISHED] test [unoptimized + debuginfo] target(s) in [..]
-[RUNNING] target/debug/deps/bin2-[..][EXE]",
+[RUNNING] [..] (target/debug/deps/bin2-[..][EXE])",
         )
         .with_stdout_contains("test test2 ... ok")
         .run();
@@ -1354,7 +1354,7 @@ fn test_run_implicit_bin_target() {
             "\
 [COMPILING] foo v0.0.1 ([CWD])
 [FINISHED] test [unoptimized + debuginfo] target(s) in [..]
-[RUNNING] target/debug/deps/mybin-[..][EXE]",
+[RUNNING] [..] (target/debug/deps/mybin-[..][EXE])",
         )
         .with_stdout_contains("test test_in_bin ... ok")
         .run();
@@ -1374,7 +1374,7 @@ fn test_run_specific_test_target() {
             "\
 [COMPILING] foo v0.0.1 ([CWD])
 [FINISHED] test [unoptimized + debuginfo] target(s) in [..]
-[RUNNING] target/debug/deps/b-[..][EXE]",
+[RUNNING] [..] (target/debug/deps/b-[..][EXE])",
         )
         .with_stdout_contains("test test_b ... ok")
         .run();
@@ -1414,8 +1414,8 @@ fn test_run_implicit_test_target() {
             "\
 [COMPILING] foo v0.0.1 ([CWD])
 [FINISHED] test [unoptimized + debuginfo] target(s) in [..]
-[RUNNING] target/debug/deps/mybin-[..][EXE]
-[RUNNING] target/debug/deps/mytest-[..][EXE]",
+[RUNNING] [..] (target/debug/deps/mybin-[..][EXE])
+[RUNNING] [..] (target/debug/deps/mytest-[..][EXE])",
         )
         .with_stdout_contains("test test_in_test ... ok")
         .run();
@@ -1455,8 +1455,8 @@ fn test_run_implicit_bench_target() {
             "\
 [COMPILING] foo v0.0.1 ([CWD])
 [FINISHED] test [unoptimized + debuginfo] target(s) in [..]
-[RUNNING] target/debug/deps/mybin-[..][EXE]
-[RUNNING] target/debug/deps/mybench-[..][EXE]",
+[RUNNING] [..] (target/debug/deps/mybin-[..][EXE])
+[RUNNING] [..] (target/debug/deps/mybench-[..][EXE])",
         )
         .with_stdout_contains("test test_in_bench ... ok")
         .run();
@@ -1552,7 +1552,7 @@ fn test_filtered_excludes_compiling_examples() {
 running 1 test
 test tests::foo ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out[..]
 
 ",
         )
@@ -1598,7 +1598,7 @@ fn test_no_harness() {
             "\
 [COMPILING] foo v0.0.1 ([CWD])
 [FINISHED] test [unoptimized + debuginfo] target(s) in [..]
-[RUNNING] target/debug/deps/bar-[..][EXE]
+[RUNNING] [..] (target/debug/deps/bar-[..][EXE])
 ",
         )
         .run();
@@ -1670,8 +1670,8 @@ fn selective_testing() {
             "\
 [COMPILING] d1 v0.0.1 ([CWD]/d1)
 [FINISHED] test [unoptimized + debuginfo] target(s) in [..]
-[RUNNING] target/debug/deps/d1-[..][EXE]
-[RUNNING] target/debug/deps/d1-[..][EXE]",
+[RUNNING] [..] (target/debug/deps/d1-[..][EXE])
+[RUNNING] [..] (target/debug/deps/d1-[..][EXE])",
         )
         .with_stdout_contains_n("running 0 tests", 2)
         .run();
@@ -1682,8 +1682,8 @@ fn selective_testing() {
             "\
 [COMPILING] d2 v0.0.1 ([CWD]/d2)
 [FINISHED] test [unoptimized + debuginfo] target(s) in [..]
-[RUNNING] target/debug/deps/d2-[..][EXE]
-[RUNNING] target/debug/deps/d2-[..][EXE]",
+[RUNNING] [..] (target/debug/deps/d2-[..][EXE])
+[RUNNING] [..] (target/debug/deps/d2-[..][EXE])",
         )
         .with_stdout_contains_n("running 0 tests", 2)
         .run();
@@ -1694,7 +1694,7 @@ fn selective_testing() {
             "\
 [COMPILING] foo v0.0.1 ([CWD])
 [FINISHED] test [unoptimized + debuginfo] target(s) in [..]
-[RUNNING] target/debug/deps/foo-[..][EXE]",
+[RUNNING] [..] (target/debug/deps/foo-[..][EXE])",
         )
         .with_stdout_contains("running 0 tests")
         .run();
@@ -1875,7 +1875,7 @@ fn selective_testing_with_docs() {
             "\
 [COMPILING] d1 v0.0.1 ([CWD]/d1)
 [FINISHED] test [unoptimized + debuginfo] target(s) in [..]
-[RUNNING] target/debug/deps/d1[..][EXE]
+[RUNNING] [..] (target/debug/deps/d1[..][EXE])
 [DOCTEST] d1",
         )
         .with_stdout_contains_n("running 0 tests", 2)
@@ -2038,7 +2038,7 @@ fn doctest_feature() {
             "\
 [COMPILING] foo [..]
 [FINISHED] test [unoptimized + debuginfo] target(s) in [..]
-[RUNNING] target/debug/deps/foo[..][EXE]
+[RUNNING] [..] (target/debug/deps/foo[..][EXE])
 [DOCTEST] foo",
         )
         .with_stdout_contains("running 0 tests")
@@ -2115,7 +2115,7 @@ fn filter_no_doc_tests() {
             "\
 [COMPILING] foo v0.0.1 ([..])
 [FINISHED] test [unoptimized + debuginfo] target(s) in [..]
-[RUNNING] target/debug/deps/foo[..][EXE]",
+[RUNNING] [..] (target/debug/deps/foo[..][EXE])",
         )
         .with_stdout_contains("running 0 tests")
         .run();
@@ -2241,7 +2241,7 @@ fn cyclic_dev_dep_doc_test() {
 [COMPILING] foo v0.0.1 ([..])
 [COMPILING] bar v0.0.1 ([..])
 [FINISHED] test [unoptimized + debuginfo] target(s) in [..]
-[RUNNING] target/debug/deps/foo[..][EXE]
+[RUNNING] [..] (target/debug/deps/foo[..][EXE])
 [DOCTEST] foo",
         )
         .with_stdout_contains("running 0 tests")
@@ -2337,13 +2337,13 @@ fn no_fail_fast() {
             "\
 [COMPILING] foo v0.0.1 ([..])
 [FINISHED] test [unoptimized + debuginfo] target(s) in [..]
-[RUNNING] target/debug/deps/foo-[..][EXE]
-[RUNNING] target/debug/deps/test_add_one-[..][EXE]",
+[RUNNING] [..] (target/debug/deps/foo-[..][EXE])
+[RUNNING] [..] (target/debug/deps/test_add_one-[..][EXE])",
         )
         .with_stdout_contains("running 0 tests")
         .with_stderr_contains(
             "\
-[RUNNING] target/debug/deps/test_sub_one-[..][EXE]
+[RUNNING] [..] (target/debug/deps/test_sub_one-[..][EXE])
 [DOCTEST] foo",
         )
         .with_stdout_contains("test result: FAILED. [..]")
@@ -2405,8 +2405,8 @@ fn test_multiple_packages() {
     let p = p.build();
 
     p.cargo("test -p d1 -p d2")
-        .with_stderr_contains("[RUNNING] target/debug/deps/d1-[..][EXE]")
-        .with_stderr_contains("[RUNNING] target/debug/deps/d2-[..][EXE]")
+        .with_stderr_contains("[RUNNING] [..] (target/debug/deps/d1-[..][EXE])")
+        .with_stderr_contains("[RUNNING] [..] (target/debug/deps/d2-[..][EXE])")
         .with_stdout_contains_n("running 0 tests", 2)
         .run();
 }
@@ -2834,6 +2834,103 @@ test bar ... ok",
 }
 
 #[cargo_test]
+fn test_all_exclude_not_found() {
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [project]
+                name = "foo"
+                version = "0.1.0"
+
+                [workspace]
+                members = ["bar"]
+            "#,
+        )
+        .file("src/main.rs", "fn main() {}")
+        .file("bar/Cargo.toml", &basic_manifest("bar", "0.1.0"))
+        .file("bar/src/lib.rs", "#[test] pub fn bar() {}")
+        .build();
+
+    p.cargo("test --workspace --exclude baz")
+        .with_stderr_contains("[WARNING] excluded package(s) `baz` not found in workspace [..]")
+        .with_stdout_contains(
+            "running 1 test
+test bar ... ok",
+        )
+        .run();
+}
+
+#[cargo_test]
+fn test_all_exclude_glob() {
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [project]
+                name = "foo"
+                version = "0.1.0"
+
+                [workspace]
+                members = ["bar", "baz"]
+            "#,
+        )
+        .file("src/main.rs", "fn main() {}")
+        .file("bar/Cargo.toml", &basic_manifest("bar", "0.1.0"))
+        .file("bar/src/lib.rs", "#[test] pub fn bar() {}")
+        .file("baz/Cargo.toml", &basic_manifest("baz", "0.1.0"))
+        .file("baz/src/lib.rs", "#[test] pub fn baz() { assert!(false); }")
+        .build();
+
+    p.cargo("test --workspace --exclude '*z'")
+        .with_stdout_contains(
+            "running 1 test
+test bar ... ok",
+        )
+        .run();
+}
+
+#[cargo_test]
+fn test_all_exclude_glob_not_found() {
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [project]
+                name = "foo"
+                version = "0.1.0"
+
+                [workspace]
+                members = ["bar"]
+            "#,
+        )
+        .file("src/main.rs", "fn main() {}")
+        .file("bar/Cargo.toml", &basic_manifest("bar", "0.1.0"))
+        .file("bar/src/lib.rs", "#[test] pub fn bar() {}")
+        .build();
+
+    p.cargo("test --workspace --exclude '*z'")
+        .with_stderr_contains(
+            "[WARNING] excluded package pattern(s) `*z` not found in workspace [..]",
+        )
+        .with_stdout_contains(
+            "running 1 test
+test bar ... ok",
+        )
+        .run();
+}
+
+#[cargo_test]
+fn test_all_exclude_broken_glob() {
+    let p = project().file("src/main.rs", "fn main() {}").build();
+
+    p.cargo("test --workspace --exclude '[*z'")
+        .with_status(101)
+        .with_stderr_contains("[ERROR] cannot build glob pattern from `[*z`")
+        .run();
+}
+
+#[cargo_test]
 fn test_all_virtual_manifest() {
     let p = project()
         .file(
@@ -2850,8 +2947,8 @@ fn test_all_virtual_manifest() {
         .build();
 
     p.cargo("test --workspace")
-        .with_stdout_contains("test a ... ok")
-        .with_stdout_contains("test b ... ok")
+        .with_stdout_contains("running 1 test\ntest a ... ok")
+        .with_stdout_contains("running 1 test\ntest b ... ok")
         .run();
 }
 
@@ -2872,8 +2969,92 @@ fn test_virtual_manifest_all_implied() {
         .build();
 
     p.cargo("test")
-        .with_stdout_contains("test a ... ok")
-        .with_stdout_contains("test b ... ok")
+        .with_stdout_contains("running 1 test\ntest a ... ok")
+        .with_stdout_contains("running 1 test\ntest b ... ok")
+        .run();
+}
+
+#[cargo_test]
+fn test_virtual_manifest_one_project() {
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [workspace]
+                members = ["bar", "baz"]
+            "#,
+        )
+        .file("bar/Cargo.toml", &basic_manifest("bar", "0.1.0"))
+        .file("bar/src/lib.rs", "#[test] fn bar() {}")
+        .file("baz/Cargo.toml", &basic_manifest("baz", "0.1.0"))
+        .file("baz/src/lib.rs", "#[test] fn baz() { assert!(false); }")
+        .build();
+
+    p.cargo("test -p bar")
+        .with_stdout_contains("running 1 test\ntest bar ... ok")
+        .with_stdout_does_not_contain("running 1 test\ntest baz ... ok")
+        .run();
+}
+
+#[cargo_test]
+fn test_virtual_manifest_glob() {
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [workspace]
+                members = ["bar", "baz"]
+            "#,
+        )
+        .file("bar/Cargo.toml", &basic_manifest("bar", "0.1.0"))
+        .file("bar/src/lib.rs", "#[test] fn bar() { assert!(false); }")
+        .file("baz/Cargo.toml", &basic_manifest("baz", "0.1.0"))
+        .file("baz/src/lib.rs", "#[test] fn baz() {}")
+        .build();
+
+    p.cargo("test -p '*z'")
+        .with_stdout_does_not_contain("running 1 test\ntest bar ... ok")
+        .with_stdout_contains("running 1 test\ntest baz ... ok")
+        .run();
+}
+
+#[cargo_test]
+fn test_virtual_manifest_glob_not_found() {
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [workspace]
+                members = ["bar"]
+            "#,
+        )
+        .file("bar/Cargo.toml", &basic_manifest("bar", "0.1.0"))
+        .file("bar/src/lib.rs", "#[test] fn bar() {}")
+        .build();
+
+    p.cargo("test -p bar -p '*z'")
+        .with_status(101)
+        .with_stderr("[ERROR] package pattern(s) `*z` not found in workspace [..]")
+        .run();
+}
+
+#[cargo_test]
+fn test_virtual_manifest_broken_glob() {
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [workspace]
+                members = ["bar"]
+            "#,
+        )
+        .file("bar/Cargo.toml", &basic_manifest("bar", "0.1.0"))
+        .file("bar/src/lib.rs", "#[test] fn bar() {}")
+        .build();
+
+    p.cargo("test -p '[*z'")
+        .with_status(101)
+        .with_stderr_contains("[ERROR] cannot build glob pattern from `[*z`")
         .run();
 }
 
@@ -3355,9 +3536,11 @@ fn json_artifact_includes_test_flag() {
                     "executable": "[..]/foo-[..]",
                     "features": [],
                     "package_id":"foo 0.0.1 ([..])",
+                    "manifest_path": "[..]",
                     "target":{
                         "kind":["lib"],
                         "crate_types":["lib"],
+                        "doc": true,
                         "doctest": true,
                         "edition": "2015",
                         "name":"foo",
@@ -3390,11 +3573,13 @@ fn json_artifact_includes_executable_for_library_tests() {
                     "filenames": "{...}",
                     "fresh": false,
                     "package_id": "foo 0.0.1 ([..])",
+                    "manifest_path": "[..]",
                     "profile": "{...}",
                     "reason": "compiler-artifact",
                     "target": {
                         "crate_types": [ "lib" ],
                         "kind": [ "lib" ],
+                        "doc": true,
                         "doctest": true,
                         "edition": "2015",
                         "name": "foo",
@@ -3427,11 +3612,13 @@ fn json_artifact_includes_executable_for_integration_tests() {
                     "filenames": "{...}",
                     "fresh": false,
                     "package_id": "foo 0.0.1 ([..])",
+                    "manifest_path": "[..]",
                     "profile": "{...}",
                     "reason": "compiler-artifact",
                     "target": {
                         "crate_types": [ "bin" ],
                         "kind": [ "test" ],
+                        "doc": false,
                         "doctest": false,
                         "edition": "2015",
                         "name": "integration_test",
@@ -3506,7 +3693,7 @@ fn doctest_skip_staticlib() {
             "\
 [COMPILING] foo [..]
 [FINISHED] test [..]
-[RUNNING] target/debug/deps/foo-[..]",
+[RUNNING] [..] (target/debug/deps/foo-[..])",
         )
         .run();
 }
@@ -3534,7 +3721,7 @@ pub fn foo() -> u8 { 1 }
             "\
 [COMPILING] foo v0.0.1 ([CWD])
 [FINISHED] test [unoptimized + debuginfo] target(s) in [..]
-[RUNNING] target/debug/deps/foo-[..]
+[RUNNING] [..] (target/debug/deps/foo-[..])
 [DOCTEST] foo
 ",
         )
@@ -3543,13 +3730,13 @@ pub fn foo() -> u8 { 1 }
 running 1 test
 test tests::it_works ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out[..]
 
 
 running 1 test
 test src/lib.rs - foo (line 1) ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out[..]
 \n",
         )
         .run();
@@ -3558,14 +3745,14 @@ test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
         .with_stderr(
             "\
 [FINISHED] test [unoptimized + debuginfo] target(s) in [..]
-[RUNNING] target/debug/deps/foo-[..]\n",
+[RUNNING] [..] (target/debug/deps/foo-[..])\n",
         )
         .with_stdout(
             "
 running 1 test
 test tests::it_works ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out[..]
 \n",
         )
         .run();
@@ -3582,7 +3769,7 @@ test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
 running 1 test
 test src/lib.rs - foo (line 1) ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out[..]
 
 ",
         )
@@ -3696,14 +3883,14 @@ fn cargo_test_doctest_xcompile_ignores() {
     #[cfg(not(target_arch = "x86_64"))]
     p.cargo("test")
         .with_stdout_contains(
-            "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out",
+            "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out[..]",
         )
         .run();
     #[cfg(target_arch = "x86_64")]
     p.cargo("test")
         .with_status(101)
         .with_stdout_contains(
-            "test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out",
+            "test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out[..]",
         )
         .run();
 
@@ -3711,7 +3898,7 @@ fn cargo_test_doctest_xcompile_ignores() {
     p.cargo("test -Zdoctest-xcompile")
         .masquerade_as_nightly_cargo()
         .with_stdout_contains(
-            "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out",
+            "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out[..]",
         )
         .run();
 
@@ -3719,7 +3906,7 @@ fn cargo_test_doctest_xcompile_ignores() {
     p.cargo("test -Zdoctest-xcompile")
         .masquerade_as_nightly_cargo()
         .with_stdout_contains(
-            "test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out",
+            "test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out[..]",
         )
         .run();
 }
@@ -3759,7 +3946,7 @@ fn cargo_test_doctest_xcompile() {
     ))
     .masquerade_as_nightly_cargo()
     .with_stdout_contains(
-        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out[..]",
     )
     .run();
 }
@@ -3839,7 +4026,7 @@ fn cargo_test_doctest_xcompile_runner() {
     ))
     .masquerade_as_nightly_cargo()
     .with_stdout_contains(
-        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out[..]",
     )
     .with_stderr_contains("this is a runner")
     .run();
@@ -3883,7 +4070,7 @@ fn cargo_test_doctest_xcompile_no_runner() {
     ))
     .masquerade_as_nightly_cargo()
     .with_stdout_contains(
-        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out[..]",
     )
     .run();
 }
@@ -4060,4 +4247,144 @@ fn bin_env_for_test() {
 
     p.cargo("test --test check_env").run();
     p.cargo("check --test check_env").run();
+}
+
+#[cargo_test]
+fn test_workspaces_cwd() {
+    // This tests that all the different test types are executed from the
+    // crate directory (manifest_dir), and not from the workspace root.
+
+    let make_lib_file = |expected| {
+        format!(
+            r#"
+                //! ```
+                //! assert_eq!("{expected}", std::fs::read_to_string("file.txt").unwrap());
+                //! assert_eq!("{expected}", include_str!("../file.txt"));
+                //! assert_eq!(
+                //!     std::path::PathBuf::from(std::env!("CARGO_MANIFEST_DIR")),
+                //!     std::env::current_dir().unwrap(),
+                //! );
+                //! ```
+
+                #[test]
+                fn test_unit_{expected}_cwd() {{
+                    assert_eq!("{expected}", std::fs::read_to_string("file.txt").unwrap());
+                    assert_eq!("{expected}", include_str!("../file.txt"));
+                    assert_eq!(
+                        std::path::PathBuf::from(std::env!("CARGO_MANIFEST_DIR")),
+                        std::env::current_dir().unwrap(),
+                    );
+                }}
+            "#,
+            expected = expected
+        )
+    };
+    let make_test_file = |expected| {
+        format!(
+            r#"
+                #[test]
+                fn test_integration_{expected}_cwd() {{
+                    assert_eq!("{expected}", std::fs::read_to_string("file.txt").unwrap());
+                    assert_eq!("{expected}", include_str!("../file.txt"));
+                    assert_eq!(
+                        std::path::PathBuf::from(std::env!("CARGO_MANIFEST_DIR")),
+                        std::env::current_dir().unwrap(),
+                    );
+                }}
+            "#,
+            expected = expected
+        )
+    };
+
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [package]
+                name = "root-crate"
+                version = "0.0.0"
+
+                [workspace]
+                members = [".", "nested-crate", "very/deeply/nested/deep-crate"]
+            "#,
+        )
+        .file("file.txt", "root")
+        .file("src/lib.rs", &make_lib_file("root"))
+        .file("tests/integration.rs", &make_test_file("root"))
+        .file(
+            "nested-crate/Cargo.toml",
+            r#"
+                [package]
+                name = "nested-crate"
+                version = "0.0.0"
+            "#,
+        )
+        .file("nested-crate/file.txt", "nested")
+        .file("nested-crate/src/lib.rs", &make_lib_file("nested"))
+        .file(
+            "nested-crate/tests/integration.rs",
+            &make_test_file("nested"),
+        )
+        .file(
+            "very/deeply/nested/deep-crate/Cargo.toml",
+            r#"
+                [package]
+                name = "deep-crate"
+                version = "0.0.0"
+            "#,
+        )
+        .file("very/deeply/nested/deep-crate/file.txt", "deep")
+        .file(
+            "very/deeply/nested/deep-crate/src/lib.rs",
+            &make_lib_file("deep"),
+        )
+        .file(
+            "very/deeply/nested/deep-crate/tests/integration.rs",
+            &make_test_file("deep"),
+        )
+        .build();
+
+    p.cargo("test --workspace --all")
+        .with_stderr_contains("[DOCTEST] root-crate")
+        .with_stderr_contains("[DOCTEST] nested-crate")
+        .with_stderr_contains("[DOCTEST] deep-crate")
+        .with_stdout_contains("test test_unit_root_cwd ... ok")
+        .with_stdout_contains("test test_unit_nested_cwd ... ok")
+        .with_stdout_contains("test test_unit_deep_cwd ... ok")
+        .with_stdout_contains("test test_integration_root_cwd ... ok")
+        .with_stdout_contains("test test_integration_nested_cwd ... ok")
+        .with_stdout_contains("test test_integration_deep_cwd ... ok")
+        .run();
+
+    p.cargo("test -p root-crate --all")
+        .with_stderr_contains("[DOCTEST] root-crate")
+        .with_stdout_contains("test test_unit_root_cwd ... ok")
+        .with_stdout_contains("test test_integration_root_cwd ... ok")
+        .run();
+
+    p.cargo("test -p nested-crate --all")
+        .with_stderr_contains("[DOCTEST] nested-crate")
+        .with_stdout_contains("test test_unit_nested_cwd ... ok")
+        .with_stdout_contains("test test_integration_nested_cwd ... ok")
+        .run();
+
+    p.cargo("test -p deep-crate --all")
+        .with_stderr_contains("[DOCTEST] deep-crate")
+        .with_stdout_contains("test test_unit_deep_cwd ... ok")
+        .with_stdout_contains("test test_integration_deep_cwd ... ok")
+        .run();
+
+    p.cargo("test --all")
+        .cwd("nested-crate")
+        .with_stderr_contains("[DOCTEST] nested-crate")
+        .with_stdout_contains("test test_unit_nested_cwd ... ok")
+        .with_stdout_contains("test test_integration_nested_cwd ... ok")
+        .run();
+
+    p.cargo("test --all")
+        .cwd("very/deeply/nested/deep-crate")
+        .with_stderr_contains("[DOCTEST] deep-crate")
+        .with_stdout_contains("test test_unit_deep_cwd ... ok")
+        .with_stdout_contains("test test_integration_deep_cwd ... ok")
+        .run();
 }

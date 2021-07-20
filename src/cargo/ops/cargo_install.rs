@@ -3,18 +3,18 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::{env, fs};
 
-use anyhow::{bail, format_err};
-use semver::VersionReq;
-use tempfile::Builder as TempFileBuilder;
-
-use crate::core::compiler::Freshness;
-use crate::core::compiler::{CompileKind, DefaultExecutor, Executor};
+use crate::core::compiler::{CompileKind, DefaultExecutor, Executor, Freshness, UnitOutput};
 use crate::core::{Dependency, Edition, Package, PackageId, Source, SourceId, Workspace};
 use crate::ops::common_for_install_and_uninstall::*;
 use crate::sources::{GitSource, PathSource, SourceConfigMap};
-use crate::util::errors::{CargoResult, CargoResultExt};
-use crate::util::{paths, Config, Filesystem, Rustc, ToSemver};
+use crate::util::errors::CargoResult;
+use crate::util::{Config, Filesystem, Rustc, ToSemver, VersionReqExt};
 use crate::{drop_println, ops};
+
+use anyhow::{bail, format_err, Context as _};
+use cargo_util::paths;
+use semver::VersionReq;
+use tempfile::Builder as TempFileBuilder;
 
 struct Transaction {
     bins: Vec<PathBuf>,
@@ -120,17 +120,15 @@ pub fn install(
         // able to run these commands.
         let dst = root.join("bin").into_path_unlocked();
         let path = env::var_os("PATH").unwrap_or_default();
-        for path in env::split_paths(&path) {
-            if path == dst {
-                return Ok(());
-            }
-        }
+        let dst_in_path = env::split_paths(&path).any(|path| path == dst);
 
-        config.shell().warn(&format!(
-            "be sure to add `{}` to your PATH to be \
+        if !dst_in_path {
+            config.shell().warn(&format!(
+                "be sure to add `{}` to your PATH to be \
              able to run the installed binaries",
-            dst.display()
-        ))?;
+                dst.display()
+            ))?;
+        }
     }
 
     if scheduled_error {
@@ -175,20 +173,14 @@ fn install_one(
             if let Some(krate) = krate {
                 let vers = if let Some(vers_flag) = vers {
                     Some(parse_semver_flag(vers_flag)?.to_string())
+                } else if source_id.is_registry() {
+                    // Avoid pre-release versions from crate.io
+                    // unless explicitly asked for
+                    Some(String::from("*"))
                 } else {
-                    if source_id.is_registry() {
-                        // Avoid pre-release versions from crate.io
-                        // unless explicitly asked for
-                        Some(String::from("*"))
-                    } else {
-                        None
-                    }
+                    None
                 };
-                Some(Dependency::parse_no_deprecated(
-                    krate,
-                    vers.as_deref(),
-                    source_id,
-                )?)
+                Some(Dependency::parse(krate, vers.as_deref(), source_id)?)
             } else {
                 None
             }
@@ -220,11 +212,19 @@ fn install_one(
                         src.path().display()
                     );
                 } else {
-                    bail!(
-                        "`{}` does not contain a Cargo.toml file. \
+                    if src.path().join("cargo.toml").exists() {
+                        bail!(
+                            "`{}` does not contain a Cargo.toml file, but found cargo.toml please try to rename it to Cargo.toml. \
                      --path must point to a directory containing a Cargo.toml file.",
-                        src.path().display()
-                    )
+                            src.path().display()
+                        )
+                    } else {
+                        bail!(
+                            "`{}` does not contain a Cargo.toml file. \
+                     --path must point to a directory containing a Cargo.toml file.",
+                            src.path().display()
+                        )
+                    }
                 }
             }
             select_pkg(
@@ -233,37 +233,37 @@ fn install_one(
                 |path: &mut PathSource<'_>| path.read_packages(),
                 config,
             )?
+        } else if let Some(dep) = dep {
+            let mut source = map.load(source_id, &HashSet::new())?;
+            if let Ok(Some(pkg)) =
+                installed_exact_package(dep.clone(), &mut source, config, opts, root, &dst, force)
+            {
+                let msg = format!(
+                    "package `{}` is already installed, use --force to override",
+                    pkg
+                );
+                config.shell().status("Ignored", &msg)?;
+                return Ok(true);
+            }
+            select_dep_pkg(&mut source, dep, config, needs_update_if_source_is_index)?
         } else {
-            if let Some(dep) = dep {
-                let mut source = map.load(source_id, &HashSet::new())?;
-                if let Ok(Some(pkg)) = installed_exact_package(
-                    dep.clone(),
-                    &mut source,
-                    config,
-                    opts,
-                    root,
-                    &dst,
-                    force,
-                ) {
-                    let msg = format!(
-                        "package `{}` is already installed, use --force to override",
-                        pkg
-                    );
-                    config.shell().status("Ignored", &msg)?;
-                    return Ok(true);
-                }
-                select_dep_pkg(&mut source, dep, config, needs_update_if_source_is_index)?
-            } else {
-                bail!(
-                    "must specify a crate to install from \
+            bail!(
+                "must specify a crate to install from \
                      crates.io, or use --path or --git to \
                      specify alternate source"
-                )
-            }
+            )
         }
     };
 
     let (mut ws, rustc, target) = make_ws_rustc_target(config, opts, &source_id, pkg.clone())?;
+    // If we're installing in --locked mode and there's no `Cargo.lock` published
+    // ie. the bin was published before https://github.com/rust-lang/cargo/pull/7026
+    if config.locked() && !ws.root().join("Cargo.lock").exists() {
+        config.shell().warn(format!(
+            "no Cargo.lock file published in {}",
+            pkg.to_string()
+        ))?;
+    }
     let pkg = if source_id.is_git() {
         // Don't use ws.current() in order to keep the package source as a git source so that
         // install tracking uses the correct source.
@@ -310,7 +310,12 @@ fn install_one(
     // *something* to install. Explicit `--bin` or `--example` flags will be
     // checked at the start of `compile_ws`.
     if !opts.filter.is_specific() && !pkg.targets().iter().any(|t| t.is_bin()) {
-        bail!("specified package `{}` has no binaries", pkg);
+        bail!(
+            "there is nothing to install in `{}`, because it has no binaries\n\
+             `cargo install` is only for installing programs, and can't be used with libraries.\n\
+             To use a library crate, add it as a dependency in a Cargo project instead.",
+            pkg
+        );
     }
 
     // Helper for --no-track flag to make sure it doesn't overwrite anything.
@@ -336,15 +341,13 @@ fn install_one(
     if no_track {
         // Check for conflicts.
         no_track_duplicates()?;
-    } else {
-        if is_installed(&pkg, config, opts, &rustc, &target, root, &dst, force)? {
-            let msg = format!(
-                "package `{}` is already installed, use --force to override",
-                pkg
-            );
-            config.shell().status("Ignored", &msg)?;
-            return Ok(false);
-        }
+    } else if is_installed(&pkg, config, opts, &rustc, &target, root, &dst, force)? {
+        let msg = format!(
+            "package `{}` is already installed, use --force to override",
+            pkg
+        );
+        config.shell().status("Ignored", &msg)?;
+        return Ok(false);
     }
 
     config.shell().status("Installing", &pkg)?;
@@ -352,13 +355,13 @@ fn install_one(
     check_yanked_install(&ws)?;
 
     let exec: Arc<dyn Executor> = Arc::new(DefaultExecutor);
-    let compile = ops::compile_ws(&ws, opts, &exec).chain_err(|| {
+    let compile = ops::compile_ws(&ws, opts, &exec).with_context(|| {
         if let Some(td) = td_opt.take() {
             // preserve the temporary directory, so the user can inspect it
             td.into_path();
         }
 
-        format_err!(
+        format!(
             "failed to compile `{}`, intermediate artifacts can be \
              found at `{}`",
             pkg,
@@ -368,10 +371,10 @@ fn install_one(
     let mut binaries: Vec<(&str, &Path)> = compile
         .binaries
         .iter()
-        .map(|(_, bin)| {
-            let name = bin.file_name().unwrap();
+        .map(|UnitOutput { path, .. }| {
+            let name = path.file_name().unwrap();
             if let Some(s) = name.to_str() {
-                Ok((s, bin.as_ref()))
+                Ok((s, path.as_ref()))
             } else {
                 bail!("Binary `{:?}` name can't be serialized into string", name)
             }
@@ -422,8 +425,8 @@ fn install_one(
         let src = staging_dir.path().join(bin);
         let dst = dst.join(bin);
         config.shell().status("Installing", dst.display())?;
-        fs::rename(&src, &dst).chain_err(|| {
-            format_err!("failed to move `{}` to `{}`", src.display(), dst.display())
+        fs::rename(&src, &dst).with_context(|| {
+            format!("failed to move `{}` to `{}`", src.display(), dst.display())
         })?;
         installed.bins.push(dst);
         successful_bins.insert(bin.to_string());
@@ -437,8 +440,8 @@ fn install_one(
                 let src = staging_dir.path().join(bin);
                 let dst = dst.join(bin);
                 config.shell().status("Replacing", dst.display())?;
-                fs::rename(&src, &dst).chain_err(|| {
-                    format_err!("failed to move `{}` to `{}`", src.display(), dst.display())
+                fs::rename(&src, &dst).with_context(|| {
+                    format!("failed to move `{}` to `{}`", src.display(), dst.display())
                 })?;
                 successful_bins.insert(bin.to_string());
             }
@@ -465,7 +468,7 @@ fn install_one(
         }
 
         match tracker.save() {
-            Err(err) => replace_result.chain_err(|| err)?,
+            Err(err) => replace_result.with_context(|| err)?,
             Ok(_) => replace_result?,
         }
     }
@@ -705,21 +708,19 @@ fn remove_orphaned_bins(
     let all_self_names = exe_names(pkg, &filter);
     let mut to_remove: HashMap<PackageId, BTreeSet<String>> = HashMap::new();
     // For each package that we stomped on.
-    for other_pkg in duplicates.values() {
+    for other_pkg in duplicates.values().flatten() {
         // Only for packages with the same name.
-        if let Some(other_pkg) = other_pkg {
-            if other_pkg.name() == pkg.name() {
-                // Check what the old package had installed.
-                if let Some(installed) = tracker.installed_bins(*other_pkg) {
-                    // If the old install has any names that no longer exist,
-                    // add them to the list to remove.
-                    for installed_name in installed {
-                        if !all_self_names.contains(installed_name.as_str()) {
-                            to_remove
-                                .entry(*other_pkg)
-                                .or_default()
-                                .insert(installed_name.clone());
-                        }
+        if other_pkg.name() == pkg.name() {
+            // Check what the old package had installed.
+            if let Some(installed) = tracker.installed_bins(*other_pkg) {
+                // If the old install has any names that no longer exist,
+                // add them to the list to remove.
+                for installed_name in installed {
+                    if !all_self_names.contains(installed_name.as_str()) {
+                        to_remove
+                            .entry(*other_pkg)
+                            .or_default()
+                            .insert(installed_name.clone());
                     }
                 }
             }
@@ -740,7 +741,7 @@ fn remove_orphaned_bins(
                     ),
                 )?;
                 paths::remove_file(&full_path)
-                    .chain_err(|| format!("failed to remove {:?}", full_path))?;
+                    .with_context(|| format!("failed to remove {:?}", full_path))?;
             }
         }
     }

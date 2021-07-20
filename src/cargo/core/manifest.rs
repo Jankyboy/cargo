@@ -5,12 +5,13 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
 
+use anyhow::Context as _;
 use semver::Version;
 use serde::ser;
 use serde::Serialize;
 use url::Url;
 
-use crate::core::compiler::CrateType;
+use crate::core::compiler::{CompileKind, CrateType};
 use crate::core::resolver::ResolveBehavior;
 use crate::core::{Dependency, PackageId, PackageIdSpec, SourceId, Summary};
 use crate::core::{Edition, Feature, Features, WorkspaceConfig};
@@ -25,10 +26,14 @@ pub enum EitherManifest {
 }
 
 /// Contains all the information about a package, as loaded from a `Cargo.toml`.
+///
+/// This is deserialized using the [`TomlManifest`] type.
 #[derive(Clone, Debug)]
 pub struct Manifest {
     summary: Summary,
     targets: Vec<Target>,
+    default_kind: Option<CompileKind>,
+    forced_kind: Option<CompileKind>,
     links: Option<String>,
     warnings: Warnings,
     exclude: Vec<String>,
@@ -37,13 +42,13 @@ pub struct Manifest {
     custom_metadata: Option<toml::Value>,
     profiles: Option<TomlProfiles>,
     publish: Option<Vec<String>>,
-    publish_lockfile: bool,
     replace: Vec<(PackageIdSpec, Dependency)>,
     patch: HashMap<Url, Vec<Dependency>>,
     workspace: WorkspaceConfig,
     original: Rc<TomlManifest>,
-    features: Features,
+    unstable_features: Features,
     edition: Edition,
+    rust_version: Option<String>,
     im_a_teapot: Option<bool>,
     default_run: Option<String>,
     metabuild: Option<Vec<String>>,
@@ -259,6 +264,9 @@ struct SerializedTarget<'a> {
     edition: &'a str,
     #[serde(rename = "required-features", skip_serializing_if = "Option::is_none")]
     required_features: Option<Vec<&'a str>>,
+    /// Whether docs should be built for the target via `cargo doc`
+    /// See https://doc.rust-lang.org/cargo/commands/cargo-doc.html#target-selection
+    doc: bool,
     doctest: bool,
     /// Whether tests should be run for the target (`test` field in `Cargo.toml`)
     test: bool,
@@ -280,7 +288,8 @@ impl ser::Serialize for Target {
             edition: &self.edition().to_string(),
             required_features: self
                 .required_features()
-                .map(|rf| rf.iter().map(|s| &**s).collect()),
+                .map(|rf| rf.iter().map(|s| s.as_str()).collect()),
+            doc: self.documented(),
             doctest: self.doctested() && self.doctestable(),
             test: self.tested(),
         }
@@ -359,6 +368,8 @@ compact_debug! {
 impl Manifest {
     pub fn new(
         summary: Summary,
+        default_kind: Option<CompileKind>,
+        forced_kind: Option<CompileKind>,
         targets: Vec<Target>,
         exclude: Vec<String>,
         include: Vec<String>,
@@ -367,12 +378,12 @@ impl Manifest {
         custom_metadata: Option<toml::Value>,
         profiles: Option<TomlProfiles>,
         publish: Option<Vec<String>>,
-        publish_lockfile: bool,
         replace: Vec<(PackageIdSpec, Dependency)>,
         patch: HashMap<Url, Vec<Dependency>>,
         workspace: WorkspaceConfig,
-        features: Features,
+        unstable_features: Features,
         edition: Edition,
+        rust_version: Option<String>,
         im_a_teapot: Option<bool>,
         default_run: Option<String>,
         original: Rc<TomlManifest>,
@@ -381,6 +392,8 @@ impl Manifest {
     ) -> Manifest {
         Manifest {
             summary,
+            default_kind,
+            forced_kind,
             targets,
             warnings: Warnings::new(),
             exclude,
@@ -393,12 +406,12 @@ impl Manifest {
             replace,
             patch,
             workspace,
-            features,
+            unstable_features,
             edition,
+            rust_version,
             original,
             im_a_teapot,
             default_run,
-            publish_lockfile,
             metabuild,
             resolve_behavior,
         }
@@ -406,6 +419,12 @@ impl Manifest {
 
     pub fn dependencies(&self) -> &[Dependency] {
         self.summary.dependencies()
+    }
+    pub fn default_kind(&self) -> Option<CompileKind> {
+        self.default_kind
+    }
+    pub fn forced_kind(&self) -> Option<CompileKind> {
+        self.forced_kind
     }
     pub fn exclude(&self) -> &[String] {
         &self.exclude
@@ -467,8 +486,9 @@ impl Manifest {
         &self.workspace
     }
 
-    pub fn features(&self) -> &Features {
-        &self.features
+    /// Unstable, nightly features that are enabled in this manifest.
+    pub fn unstable_features(&self) -> &Features {
+        &self.unstable_features
     }
 
     /// The style of resolver behavior to use, declared with the `resolver` field.
@@ -487,13 +507,20 @@ impl Manifest {
 
     pub fn feature_gate(&self) -> CargoResult<()> {
         if self.im_a_teapot.is_some() {
-            self.features
+            self.unstable_features
                 .require(Feature::test_dummy_unstable())
-                .chain_err(|| {
-                    anyhow::format_err!(
-                        "the `im-a-teapot` manifest key is unstable and may \
-                         not work properly in England"
-                    )
+                .with_context(|| {
+                    "the `im-a-teapot` manifest key is unstable and may \
+                     not work properly in England"
+                })?;
+        }
+
+        if self.default_kind.is_some() || self.forced_kind.is_some() {
+            self.unstable_features
+                .require(Feature::per_package_target())
+                .with_context(|| {
+                    "the `package.default-target` and `package.forced-target` \
+                     manifest keys are unstable and may not work properly"
                 })?;
         }
 
@@ -511,6 +538,10 @@ impl Manifest {
 
     pub fn edition(&self) -> Edition {
         self.edition
+    }
+
+    pub fn rust_version(&self) -> Option<&str> {
+        self.rust_version.as_deref()
     }
 
     pub fn custom_metadata(&self) -> Option<&toml::Value> {
@@ -578,7 +609,7 @@ impl VirtualManifest {
         &self.warnings
     }
 
-    pub fn features(&self) -> &Features {
+    pub fn unstable_features(&self) -> &Features {
         &self.features
     }
 
@@ -894,7 +925,7 @@ impl Target {
             TargetKind::ExampleLib(..) | TargetKind::ExampleBin => {
                 format!("example \"{}\"", self.name())
             }
-            TargetKind::CustomBuild => "custom-build".to_string(),
+            TargetKind::CustomBuild => "build script".to_string(),
         }
     }
 }

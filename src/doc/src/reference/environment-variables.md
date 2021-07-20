@@ -21,34 +21,47 @@ system:
 * `RUSTC` — Instead of running `rustc`, Cargo will execute this specified
   compiler instead. See [`build.rustc`] to set via config.
 * `RUSTC_WRAPPER` — Instead of simply running `rustc`, Cargo will execute this
-  specified wrapper instead, passing as its commandline arguments the rustc
+  specified wrapper instead, passing as its command-line arguments the rustc
   invocation, with the first argument being `rustc`. Useful to set up a build
   cache tool such as `sccache`. See [`build.rustc-wrapper`] to set via config.
+* `RUSTC_WORKSPACE_WRAPPER` — Instead of simply running `rustc`, Cargo will
+  execute this specified wrapper instead for workspace members only, passing
+  as its command-line arguments the rustc invocation, with the first argument
+  being `rustc`. It affects the filename hash so that artifacts produced by
+  the wrapper are cached separately. See [`build.rustc-workspace-wrapper`]
+  to set via config.
 * `RUSTDOC` — Instead of running `rustdoc`, Cargo will execute this specified
   `rustdoc` instance instead. See [`build.rustdoc`] to set via config.
 * `RUSTDOCFLAGS` — A space-separated list of custom flags to pass to all `rustdoc`
   invocations that Cargo performs. In contrast with [`cargo rustdoc`], this is
   useful for passing a flag to *all* `rustdoc` instances. See
-  [`build.rustdocflags`] for some more ways to set flags.
+  [`build.rustdocflags`] for some more ways to set flags. This string is
+  split by whitespace; for a more robust encoding of multiple arguments,
+  set `CARGO_ENCODED_RUSTDOCFLAGS` instead with arguments separated by
+  `0x1f` (ASCII Unit Separator).
 * `RUSTFLAGS` — A space-separated list of custom flags to pass to all compiler
   invocations that Cargo performs. In contrast with [`cargo rustc`], this is
   useful for passing a flag to *all* compiler instances. See
-  [`build.rustflags`] for some more ways to set flags.
+  [`build.rustflags`] for some more ways to set flags. This string is
+  split by whitespace; for a more robust encoding of multiple arguments,
+  set `CARGO_ENCODED_RUSTFLAGS` instead with arguments separated by
+  `0x1f` (ASCII Unit Separator).
 * `CARGO_INCREMENTAL` — If this is set to 1 then Cargo will force [incremental
   compilation] to be enabled for the current compilation, and when set to 0 it
   will force disabling it. If this env var isn't present then cargo's defaults
   will otherwise be used. See also [`build.incremental`] config value.
 * `CARGO_CACHE_RUSTC_INFO` — If this is set to 0 then Cargo will not try to cache
   compiler version information.
-* `CARGO_NAME` — The author name to use for [`cargo new`].
-* `CARGO_EMAIL` — The author email to use for [`cargo new`].
 * `HTTPS_PROXY` or `https_proxy` or `http_proxy` — The HTTP proxy to use, see
   [`http.proxy`] for more detail.
 * `HTTP_TIMEOUT` — The HTTP timeout in seconds, see [`http.timeout`] for more
   detail.
 * `TERM` — If this is set to `dumb`, it disables the progress bar.
 * `BROWSER` — The web browser to execute to open documentation with [`cargo
-  doc`]'s' `--open` flag.
+  doc`]'s' `--open` flag, see [`doc.browser`] for more details.
+* `RUSTFMT` — Instead of running `rustfmt`,
+  [`cargo fmt`](https://github.com/rust-lang/rustfmt) will execute this specified
+  `rustfmt` instance instead.
 
 #### Configuration environment variables
 
@@ -60,6 +73,7 @@ supported environment variables are:
 * `CARGO_BUILD_JOBS` — Number of parallel jobs, see [`build.jobs`].
 * `CARGO_BUILD_RUSTC` — The `rustc` executable, see [`build.rustc`].
 * `CARGO_BUILD_RUSTC_WRAPPER` — The `rustc` wrapper, see [`build.rustc-wrapper`].
+* `CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER` — The `rustc` wrapper for workspace members only, see [`build.rustc-workspace-wrapper`].
 * `CARGO_BUILD_RUSTDOC` — The `rustdoc` executable, see [`build.rustdoc`].
 * `CARGO_BUILD_TARGET` — The default target platform, see [`build.target`].
 * `CARGO_BUILD_TARGET_DIR` — The default output directory, see [`build.target-dir`].
@@ -68,8 +82,6 @@ supported environment variables are:
 * `CARGO_BUILD_INCREMENTAL` — Incremental compilation, see [`build.incremental`].
 * `CARGO_BUILD_DEP_INFO_BASEDIR` — Dep-info relative directory, see [`build.dep-info-basedir`].
 * `CARGO_BUILD_PIPELINING` — Whether or not to use `rustc` pipelining, see [`build.pipelining`].
-* `CARGO_CARGO_NEW_NAME` — The author name to use with [`cargo new`], see [`cargo-new.name`].
-* `CARGO_CARGO_NEW_EMAIL` — The author email to use with [`cargo new`], see [`cargo-new.email`].
 * `CARGO_CARGO_NEW_VCS` — The default source control system with [`cargo new`], see [`cargo-new.vcs`].
 * `CARGO_HTTP_DEBUG` — Enables HTTP debugging, see [`http.debug`].
 * `CARGO_HTTP_PROXY` — Enables HTTP proxy, see [`http.proxy`].
@@ -94,6 +106,7 @@ supported environment variables are:
 * `CARGO_PROFILE_<name>_OPT_LEVEL` — Set the optimization level, see [`profile.<name>.opt-level`].
 * `CARGO_PROFILE_<name>_PANIC` — The panic strategy to use, see [`profile.<name>.panic`].
 * `CARGO_PROFILE_<name>_RPATH` — The rpath linking option, see [`profile.<name>.rpath`].
+* `CARGO_PROFILE_<name>_SPLIT_DEBUGINFO` — Controls debug file output behavior, see [`profile.<name>.split-debuginfo`].
 * `CARGO_REGISTRIES_<name>_INDEX` — URL of a registry index, see [`registries.<name>.index`].
 * `CARGO_REGISTRIES_<name>_TOKEN` — Authentication token of a registry, see [`registries.<name>.token`].
 * `CARGO_REGISTRY_DEFAULT` — Default registry for the `--registry` flag, see [`registry.default`].
@@ -110,6 +123,7 @@ supported environment variables are:
 [`cargo install`]: ../commands/cargo-install.md
 [`cargo new`]: ../commands/cargo-new.md
 [`cargo rustc`]: ../commands/cargo-rustc.md
+[`cargo rustdoc`]: ../commands/cargo-rustdoc.md
 [config-env]: config.md#environment-variables
 [crates.io]: https://crates.io/
 [incremental compilation]: profiles.md#incremental
@@ -117,6 +131,7 @@ supported environment variables are:
 [`build.jobs`]: config.md#buildjobs
 [`build.rustc`]: config.md#buildrustc
 [`build.rustc-wrapper`]: config.md#buildrustc-wrapper
+[`build.rustc-workspace-wrapper`]: config.md#buildrustc-workspace-wrapper
 [`build.rustdoc`]: config.md#buildrustdoc
 [`build.target`]: config.md#buildtarget
 [`build.target-dir`]: config.md#buildtarget-dir
@@ -125,6 +140,7 @@ supported environment variables are:
 [`build.incremental`]: config.md#buildincremental
 [`build.dep-info-basedir`]: config.md#builddep-info-basedir
 [`build.pipelining`]: config.md#buildpipelining
+[`doc.browser`]: config.md#docbrowser
 [`cargo-new.name`]: config.md#cargo-newname
 [`cargo-new.email`]: config.md#cargo-newemail
 [`cargo-new.vcs`]: config.md#cargo-newvcs
@@ -151,6 +167,7 @@ supported environment variables are:
 [`profile.<name>.opt-level`]: config.md#profilenameopt-level
 [`profile.<name>.panic`]: config.md#profilenamepanic
 [`profile.<name>.rpath`]: config.md#profilenamerpath
+[`profile.<name>.split-debuginfo`]: config.md#profilenamesplit-debuginfo
 [`registries.<name>.index`]: config.md#registriesnameindex
 [`registries.<name>.token`]: config.md#registriesnametoken
 [`registry.default`]: config.md#registrydefault
@@ -175,6 +192,9 @@ let version = env!("CARGO_PKG_VERSION");
 ```
 
 `version` will now contain the value of `CARGO_PKG_VERSION`.
+
+Note that if one of these values is not provided in the manifest, the
+corresponding environment variable is set to the empty string, `""`.
 
 * `CARGO` — Path to the `cargo` binary performing the build.
 * `CARGO_MANIFEST_DIR` — The directory containing the manifest of your package.
@@ -202,6 +222,18 @@ let version = env!("CARGO_PKG_VERSION");
   example, `CARGO_BIN_EXE_my-program` for a binary named `my-program`.
   Binaries are automatically built when the test is built, unless the binary
   has required features that are not enabled.
+* `CARGO_PRIMARY_PACKAGE` — This environment variable will be set if the
+  package being built is primary. Primary packages are the ones the user
+  selected on the command-line, either with `-p` flags or the defaults based
+  on the current directory and the default workspace members. This environment
+  variable will not be set when building dependencies. This is only set when
+  compiling the package (not when running binaries or tests).
+* `CARGO_TARGET_TMPDIR` — Only set when building [integration test] or benchmark code.
+  This is a path to a directory inside the target directory
+  where integration tests or benchmarks are free to put any data needed by
+  the tests/benches. Cargo initially creates this directory but doesn't
+  manage its content in any way, this is the responsibility of the test code.
+  There are separate directories for `debug` and `release` profiles.
 
 [integration test]: cargo-targets.md#integration-tests
 [`env` macro]: ../../std/macro.env.html
@@ -291,7 +323,7 @@ let out_dir = env::var("OUT_DIR").unwrap();
 * `TARGET` — the target triple that is being compiled for. Native code should be
              compiled for this triple. See the [Target Triple] description
              for more information.
-* `HOST` — the host triple of the rust compiler.
+* `HOST` — the host triple of the Rust compiler.
 * `NUM_JOBS` — the parallelism specified as the top-level parallelism. This can
                be useful to pass a `-j` parameter to a system like `make`. Note
                that care should be taken when interpreting this environment
@@ -308,11 +340,21 @@ let out_dir = env::var("OUT_DIR").unwrap();
 * `RUSTC`, `RUSTDOC` — the compiler and documentation generator that Cargo has
                        resolved to use, passed to the build script so it might
                        use it as well.
+* `RUSTC_WRAPPER` — the `rustc` wrapper, if any, that Cargo is using.
+                    See [`build.rustc-wrapper`].
+* `RUSTC_WORKSPACE_WRAPPER` — the `rustc` wrapper, if any, that Cargo is
+			      using for workspace members. See
+			      [`build.rustc-workspace-wrapper`].
 * `RUSTC_LINKER` — The path to the linker binary that Cargo has resolved to use
                    for the current target, if specified. The linker can be
                    changed by editing `.cargo/config.toml`; see the documentation
                    about [cargo configuration][cargo-config] for more
                    information.
+* `CARGO_ENCODED_RUSTFLAGS` — extra flags that Cargo invokes `rustc`
+			      with, separated by a `0x1f` character
+			      (ASCII Unit Separator). See
+			      [`build.rustflags`].
+* `CARGO_PKG_<var>` - The package information variables, with the same names and values as are [provided during crate building][variables set for crates].
 
 [unix-like platforms]: ../../reference/conditional-compilation.html#unix-and-windows
 [windows-like platforms]: ../../reference/conditional-compilation.html#unix-and-windows
@@ -329,6 +371,7 @@ let out_dir = env::var("OUT_DIR").unwrap();
 [jobserver]: https://www.gnu.org/software/make/manual/html_node/Job-Slots.html
 [cargo-config]: config.md
 [Target Triple]: ../appendix/glossary.md#target
+[variables set for crates]: #environment-variables-cargo-sets-for-crates
 
 ### Environment variables Cargo sets for 3rd party subcommands
 

@@ -60,10 +60,10 @@
 //! `cargo rustc` extra args                   | ✓           | ✓
 //! CompileMode                                | ✓           | ✓
 //! Target Name                                | ✓           | ✓
-//! Target CompileKind (bin/lib/etc.)          | ✓           | ✓
+//! TargetKind (bin/lib/etc.)                  | ✓           | ✓
 //! Enabled Features                           | ✓           | ✓
 //! Immediate dependency’s hashes              | ✓[^1]       | ✓
-//! Target or Host mode                        |             | ✓
+//! CompileKind (host/target)                  | ✓           | ✓
 //! __CARGO_DEFAULT_LIB_METADATA[^4]           |             | ✓
 //! package_id                                 |             | ✓
 //! authors, description, homepage, repo       | ✓           |
@@ -72,7 +72,7 @@
 //! -C incremental=… flag                      | ✓           |
 //! mtime of sources                           | ✓[^3]       |
 //! RUSTFLAGS/RUSTDOCFLAGS                     | ✓           |
-//! LTO flags                                  | ✓           |
+//! LTO flags                                  | ✓           | ✓
 //! config settings[^5]                        | ✓           |
 //! is_std                                     |             | ✓
 //!
@@ -313,14 +313,16 @@
 //! <https://github.com/rust-lang/cargo/issues?q=is%3Aissue+is%3Aopen+label%3AA-rebuild-detection>
 
 use std::collections::hash_map::{Entry, HashMap};
+use std::convert::TryInto;
 use std::env;
-use std::hash::{self, Hasher};
+use std::hash::{self, Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::str;
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
-use anyhow::{bail, format_err};
+use anyhow::{bail, format_err, Context as _};
+use cargo_util::{paths, ProcessBuilder};
 use filetime::FileTime;
 use log::{debug, info};
 use serde::de;
@@ -330,16 +332,13 @@ use serde::{Deserialize, Serialize};
 use crate::core::compiler::unit_graph::UnitDep;
 use crate::core::Package;
 use crate::util;
-use crate::util::errors::{CargoResult, CargoResultExt};
+use crate::util::errors::CargoResult;
 use crate::util::interning::InternedString;
-use crate::util::paths;
-use crate::util::{internal, profile, ProcessBuilder};
+use crate::util::{internal, path_args, profile, StableHasher};
+use crate::CARGO_ENV;
 
 use super::custom_build::BuildDeps;
-use super::job::{
-    Freshness::{Dirty, Fresh},
-    Job, Work,
-};
+use super::job::{Job, Work};
 use super::{BuildContext, Context, FileFlavor, Unit};
 
 /// Determines if a `unit` is up-to-date, and if not prepares necessary work to
@@ -395,7 +394,7 @@ pub fn prepare_target(cx: &mut Context<'_, '_>, unit: &Unit, force: bool) -> Car
     }
 
     if compare.is_ok() && !force {
-        return Ok(Job::new(Work::noop(), Fresh));
+        return Ok(Job::new_fresh());
     }
 
     // Clear out the old fingerprint file if it exists. This protects when
@@ -443,14 +442,13 @@ pub fn prepare_target(cx: &mut Context<'_, '_>, unit: &Unit, force: bool) -> Car
         // using the `build_script_local_fingerprints` function which returns a
         // thunk we can invoke on a foreign thread to calculate this.
         let build_script_outputs = Arc::clone(&cx.build_script_outputs);
-        let pkg_id = unit.pkg.package_id();
         let metadata = cx.get_run_build_script_metadata(unit);
         let (gen_local, _overridden) = build_script_local_fingerprints(cx, unit);
         let output_path = cx.build_explicit_deps[unit].build_script_output.clone();
         Work::new(move |_| {
             let outputs = build_script_outputs.lock().unwrap();
             let output = outputs
-                .get(pkg_id, metadata)
+                .get(metadata)
                 .expect("output must exist after running");
             let deps = BuildDeps::new(&output_path, Some(output));
 
@@ -468,7 +466,7 @@ pub fn prepare_target(cx: &mut Context<'_, '_>, unit: &Unit, force: bool) -> Car
         Work::new(move |_| write_fingerprint(&loc, &fingerprint))
     };
 
-    Ok(Job::new(write_fingerprint, Dirty))
+    Ok(Job::new_dirty(write_fingerprint))
 }
 
 /// Dependency edge information for fingerprints. This is generated for each
@@ -504,7 +502,7 @@ struct DepFingerprint {
 /// as a fingerprint (all source files must be modified *before* this mtime).
 /// This dep-info file is not generated, however, until after the crate is
 /// compiled. As a result, this structure can be thought of as a fingerprint
-/// to-be. The actual value can be calculated via `hash()`, but the operation
+/// to-be. The actual value can be calculated via `hash_u64()`, but the operation
 /// may fail as some files may not have been generated.
 ///
 /// Note that dependencies are taken into account for fingerprints because rustc
@@ -545,6 +543,9 @@ pub struct Fingerprint {
     metadata: u64,
     /// Hash of various config settings that change how things are compiled.
     config: u64,
+    /// The rustc target. This is only relevant for `.json` files, otherwise
+    /// the metadata hash segregates the units.
+    compile_kind: u64,
     /// Description of whether the filesystem status for this unit is up to date
     /// or should be considered stale.
     #[serde(skip)]
@@ -593,7 +594,7 @@ impl Serialize for DepFingerprint {
             &self.pkg_id,
             &self.name,
             &self.public,
-            &self.fingerprint.hash(),
+            &self.fingerprint.hash_u64(),
         )
             .serialize(ser)
     }
@@ -712,6 +713,7 @@ impl LocalFingerprint {
         mtime_cache: &mut HashMap<PathBuf, FileTime>,
         pkg_root: &Path,
         target_root: &Path,
+        cargo_exe: &Path,
     ) -> CargoResult<Option<StaleItem>> {
         match self {
             // We need to parse `dep_info`, learn about the crate's dependencies.
@@ -727,7 +729,21 @@ impl LocalFingerprint {
                     None => return Ok(Some(StaleItem::MissingFile(dep_info))),
                 };
                 for (key, previous) in info.env.iter() {
-                    let current = env::var(key).ok();
+                    let current = if key == CARGO_ENV {
+                        Some(
+                            cargo_exe
+                                .to_str()
+                                .ok_or_else(|| {
+                                    format_err!(
+                                        "cargo exe path {} must be valid UTF-8",
+                                        cargo_exe.display()
+                                    )
+                                })?
+                                .to_string(),
+                        )
+                    } else {
+                        env::var(key).ok()
+                    };
                     if current == *previous {
                         continue;
                     }
@@ -766,9 +782,6 @@ impl LocalFingerprint {
     }
 }
 
-#[derive(Debug)]
-struct MtimeSlot(Mutex<Option<FileTime>>);
-
 impl Fingerprint {
     fn new() -> Fingerprint {
         Fingerprint {
@@ -783,6 +796,7 @@ impl Fingerprint {
             rustflags: Vec::new(),
             metadata: 0,
             config: 0,
+            compile_kind: 0,
             fs_status: FsStatus::Stale,
             outputs: Vec::new(),
         }
@@ -798,7 +812,7 @@ impl Fingerprint {
         *self.memoized_hash.lock().unwrap() = None;
     }
 
-    fn hash(&self) -> u64 {
+    fn hash_u64(&self) -> u64 {
         if let Some(s) = *self.memoized_hash.lock().unwrap() {
             return s;
         }
@@ -819,9 +833,9 @@ impl Fingerprint {
         }
         if self.features != old.features {
             bail!(
-                "features have changed: {} != {}",
-                self.features,
-                old.features
+                "features have changed: previously {}, now {}",
+                old.features,
+                self.features
             )
         }
         if self.target != old.target {
@@ -835,9 +849,9 @@ impl Fingerprint {
         }
         if self.rustflags != old.rustflags {
             bail!(
-                "RUSTFLAGS has changed: {:?} != {:?}",
-                self.rustflags,
-                old.rustflags
+                "RUSTFLAGS has changed: previously {:?}, now {:?}",
+                old.rustflags,
+                self.rustflags
             )
         }
         if self.metadata != old.metadata {
@@ -845,6 +859,9 @@ impl Fingerprint {
         }
         if self.config != old.config {
             bail!("configuration settings have changed")
+        }
+        if self.compile_kind != old.compile_kind {
+            bail!("compile kind (rustc target) changed")
         }
         let my_local = self.local.lock().unwrap();
         let old_local = old.local.lock().unwrap();
@@ -855,7 +872,11 @@ impl Fingerprint {
             match (new, old) {
                 (LocalFingerprint::Precalculated(a), LocalFingerprint::Precalculated(b)) => {
                     if a != b {
-                        bail!("precalculated components have changed: {} != {}", a, b)
+                        bail!(
+                            "precalculated components have changed: previously {}, now {}",
+                            b,
+                            a
+                        )
                     }
                 }
                 (
@@ -863,7 +884,11 @@ impl Fingerprint {
                     LocalFingerprint::CheckDepInfo { dep_info: bdep },
                 ) => {
                     if adep != bdep {
-                        bail!("dep info output changed: {:?} != {:?}", adep, bdep)
+                        bail!(
+                            "dep info output changed: previously {:?}, now {:?}",
+                            bdep,
+                            adep
+                        )
                     }
                 }
                 (
@@ -877,13 +902,17 @@ impl Fingerprint {
                     },
                 ) => {
                     if aout != bout {
-                        bail!("rerun-if-changed output changed: {:?} != {:?}", aout, bout)
+                        bail!(
+                            "rerun-if-changed output changed: previously {:?}, now {:?}",
+                            bout,
+                            aout
+                        )
                     }
                     if apaths != bpaths {
                         bail!(
-                            "rerun-if-changed output changed: {:?} != {:?}",
-                            apaths,
+                            "rerun-if-changed output changed: previously {:?}, now {:?}",
                             bpaths,
+                            apaths,
                         )
                     }
                 }
@@ -898,11 +927,11 @@ impl Fingerprint {
                     },
                 ) => {
                     if *akey != *bkey {
-                        bail!("env vars changed: {} != {}", akey, bkey);
+                        bail!("env vars changed: previously {}, now {}", bkey, akey);
                     }
                     if *avalue != *bvalue {
                         bail!(
-                            "env var `{}` changed: previously {:?} now {:?}",
+                            "env var `{}` changed: previously {:?}, now {:?}",
                             akey,
                             bvalue,
                             avalue
@@ -927,13 +956,13 @@ impl Fingerprint {
                 return Err(e);
             }
 
-            if a.fingerprint.hash() != b.fingerprint.hash() {
+            if a.fingerprint.hash_u64() != b.fingerprint.hash_u64() {
                 let e = format_err!(
                     "new ({}/{:x}) != old ({}/{:x})",
                     a.name,
-                    a.fingerprint.hash(),
+                    a.fingerprint.hash_u64(),
                     b.name,
-                    b.fingerprint.hash()
+                    b.fingerprint.hash_u64()
                 )
                 .context("unit dependency information changed");
                 return Err(e);
@@ -964,6 +993,7 @@ impl Fingerprint {
         mtime_cache: &mut HashMap<PathBuf, FileTime>,
         pkg_root: &Path,
         target_root: &Path,
+        cargo_exe: &Path,
     ) -> CargoResult<()> {
         assert!(!self.fs_status.up_to_date());
 
@@ -1055,7 +1085,9 @@ impl Fingerprint {
         // files for this package itself. If we do find something log a helpful
         // message and bail out so we stay stale.
         for local in self.local.get_mut().unwrap().iter() {
-            if let Some(item) = local.find_stale_item(mtime_cache, pkg_root, target_root)? {
+            if let Some(item) =
+                local.find_stale_item(mtime_cache, pkg_root, target_root, cargo_exe)?
+            {
                 item.log();
                 return Ok(());
             }
@@ -1081,12 +1113,22 @@ impl hash::Hash for Fingerprint {
             ref local,
             metadata,
             config,
+            compile_kind,
             ref rustflags,
             ..
         } = *self;
         let local = local.lock().unwrap();
         (
-            rustc, features, target, path, profile, &*local, metadata, config, rustflags,
+            rustc,
+            features,
+            target,
+            path,
+            profile,
+            &*local,
+            metadata,
+            config,
+            compile_kind,
+            rustflags,
         )
             .hash(h);
 
@@ -1103,39 +1145,8 @@ impl hash::Hash for Fingerprint {
             name.hash(h);
             public.hash(h);
             // use memoized dep hashes to avoid exponential blowup
-            h.write_u64(Fingerprint::hash(fingerprint));
+            h.write_u64(fingerprint.hash_u64());
         }
-    }
-}
-
-impl hash::Hash for MtimeSlot {
-    fn hash<H: Hasher>(&self, h: &mut H) {
-        self.0.lock().unwrap().hash(h)
-    }
-}
-
-impl ser::Serialize for MtimeSlot {
-    fn serialize<S>(&self, s: S) -> Result<S::Ok, S::Error>
-    where
-        S: ser::Serializer,
-    {
-        self.0
-            .lock()
-            .unwrap()
-            .map(|ft| (ft.unix_seconds(), ft.nanoseconds()))
-            .serialize(s)
-    }
-}
-
-impl<'de> de::Deserialize<'de> for MtimeSlot {
-    fn deserialize<D>(d: D) -> Result<MtimeSlot, D::Error>
-    where
-        D: de::Deserializer<'de>,
-    {
-        let kind: Option<(i64, u32)> = de::Deserialize::deserialize(d)?;
-        Ok(MtimeSlot(Mutex::new(
-            kind.map(|(s, n)| FileTime::from_unix_time(s, n)),
-        )))
     }
 }
 
@@ -1230,7 +1241,13 @@ fn calculate(cx: &mut Context<'_, '_>, unit: &Unit) -> CargoResult<Arc<Fingerpri
     // After we built the initial `Fingerprint` be sure to update the
     // `fs_status` field of it.
     let target_root = target_root(cx);
-    fingerprint.check_filesystem(&mut cx.mtime_cache, unit.pkg.root(), &target_root)?;
+    let cargo_exe = cx.bcx.config.cargo_exe()?;
+    fingerprint.check_filesystem(
+        &mut cx.mtime_cache,
+        unit.pkg.root(),
+        &target_root,
+        cargo_exe,
+    )?;
 
     let fingerprint = Arc::new(fingerprint);
     cx.fingerprints
@@ -1260,7 +1277,7 @@ fn calculate_normal(cx: &mut Context<'_, '_>, unit: &Unit) -> CargoResult<Finger
     let target_root = target_root(cx);
     let local = if unit.mode.is_doc() {
         // rustdoc does not have dep-info files.
-        let fingerprint = pkg_fingerprint(cx.bcx, &unit.pkg).chain_err(|| {
+        let fingerprint = pkg_fingerprint(cx.bcx, &unit.pkg).with_context(|| {
             format!(
                 "failed to determine package fingerprint for documenting {}",
                 unit.pkg
@@ -1301,27 +1318,33 @@ fn calculate_normal(cx: &mut Context<'_, '_>, unit: &Unit) -> CargoResult<Finger
     // Include metadata since it is exposed as environment variables.
     let m = unit.pkg.manifest().metadata();
     let metadata = util::hash_u64((&m.authors, &m.description, &m.homepage, &m.repository));
-    let config = if unit.mode.is_doc() && cx.bcx.config.cli_unstable().rustdoc_map {
-        cx.bcx
-            .config
-            .doc_extern_map()
-            .map_or(0, |map| util::hash_u64(map))
-    } else {
-        0
-    };
+    let mut config = StableHasher::new();
+    if let Some(linker) = cx.bcx.linker(unit.kind) {
+        linker.hash(&mut config);
+    }
+    if unit.mode.is_doc() && cx.bcx.config.cli_unstable().rustdoc_map {
+        if let Ok(map) = cx.bcx.config.doc_extern_map() {
+            map.hash(&mut config);
+        }
+    }
+    if let Some(allow_features) = &cx.bcx.config.cli_unstable().allow_features {
+        allow_features.hash(&mut config);
+    }
+    let compile_kind = unit.kind.fingerprint_hash();
     Ok(Fingerprint {
         rustc: util::hash_u64(&cx.bcx.rustc().verbose_version),
         target: util::hash_u64(&unit.target),
         profile: profile_hash,
         // Note that .0 is hashed here, not .1 which is the cwd. That doesn't
         // actually affect the output artifact so there's no need to hash it.
-        path: util::hash_u64(super::path_args(cx.bcx, unit).0),
+        path: util::hash_u64(path_args(cx.bcx.ws, unit).0),
         features: format!("{:?}", unit.features),
         deps,
         local: Mutex::new(local),
         memoized_hash: Mutex::new(None),
         metadata,
-        config,
+        config: config.finish(),
+        compile_kind,
         rustflags: extra_flags,
         fs_status: FsStatus::Stale,
         outputs,
@@ -1343,7 +1366,7 @@ fn calculate_run_custom_build(cx: &mut Context<'_, '_>, unit: &Unit) -> CargoRes
     let local = (gen_local)(
         deps,
         Some(&|| {
-            pkg_fingerprint(cx.bcx, &unit.pkg).chain_err(|| {
+            pkg_fingerprint(cx.bcx, &unit.pkg).with_context(|| {
                 format!(
                     "failed to determine package fingerprint for build script for {}",
                     unit.pkg
@@ -1500,7 +1523,7 @@ fn build_script_override_fingerprint(
     let build_script_outputs = cx.build_script_outputs.lock().unwrap();
     let metadata = cx.get_run_build_script_metadata(unit);
     // Returns None if it is not overridden.
-    let output = build_script_outputs.get(unit.pkg.package_id(), metadata)?;
+    let output = build_script_outputs.get(metadata)?;
     let s = format!(
         "overridden build state with hash: {}",
         util::hash_u64(output)
@@ -1552,14 +1575,14 @@ fn write_fingerprint(loc: &Path, fingerprint: &Fingerprint) -> CargoResult<()> {
     // fingerprint::new().rustc == 0, make sure it doesn't make it to the file system.
     // This is mostly so outside tools can reliably find out what rust version this file is for,
     // as we can use the full hash.
-    let hash = fingerprint.hash();
+    let hash = fingerprint.hash_u64();
     debug!("write fingerprint ({:x}) : {}", hash, loc.display());
     paths::write(loc, util::to_hex(hash).as_bytes())?;
 
     let json = serde_json::to_string(fingerprint).unwrap();
     if cfg!(debug_assertions) {
         let f: Fingerprint = serde_json::from_str(&json).unwrap();
-        assert_eq!(f.hash(), hash);
+        assert_eq!(f.hash_u64(), hash);
     }
     paths::write(&loc.with_extension("json"), json.as_bytes())?;
     Ok(())
@@ -1603,7 +1626,7 @@ fn compare_old_fingerprint(
         paths::set_file_time_no_err(loc, t);
     }
 
-    let new_hash = new_fingerprint.hash();
+    let new_hash = new_fingerprint.hash_u64();
 
     if util::to_hex(new_hash) == old_fingerprint_short && new_fingerprint.fs_status.up_to_date() {
         return Ok(());
@@ -1611,10 +1634,13 @@ fn compare_old_fingerprint(
 
     let old_fingerprint_json = paths::read(&loc.with_extension("json"))?;
     let old_fingerprint: Fingerprint = serde_json::from_str(&old_fingerprint_json)
-        .chain_err(|| internal("failed to deserialize json"))?;
+        .with_context(|| internal("failed to deserialize json"))?;
     // Fingerprint can be empty after a failed rebuild (see comment in prepare_target).
     if !old_fingerprint_short.is_empty() {
-        debug_assert_eq!(util::to_hex(old_fingerprint.hash()), old_fingerprint_short);
+        debug_assert_eq!(
+            util::to_hex(old_fingerprint.hash_u64()),
+            old_fingerprint_short
+        );
     }
     let result = new_fingerprint.compare(&old_fingerprint);
     assert!(result.is_err());
@@ -1702,7 +1728,7 @@ where
         let path_mtime = match mtime_cache.entry(path.to_path_buf()) {
             Entry::Occupied(o) => *o.get(),
             Entry::Vacant(v) => {
-                let mtime = match paths::mtime(path) {
+                let mtime = match paths::mtime_recursive(path) {
                     Ok(mtime) => mtime,
                     Err(..) => return Some(StaleItem::MissingFile(path.to_path_buf())),
                 };
@@ -1818,9 +1844,13 @@ pub fn translate_dep_info(
     // you write a binary that does `println!("{}", env!("OUT_DIR"))` we won't
     // recompile that if you move the target directory. Hopefully that's not too
     // bad of an issue for now...
+    //
+    // This also includes `CARGO` since if the code is explicitly wanting to
+    // know that path, it should be rebuilt if it changes. The CARGO path is
+    // not tracked elsewhere in the fingerprint.
     on_disk_info
         .env
-        .retain(|(key, _)| !rustc_cmd.get_envs().contains_key(key));
+        .retain(|(key, _)| !rustc_cmd.get_envs().contains_key(key) || key == CARGO_ENV);
 
     for file in depinfo.files {
         // The path may be absolute or relative, canonical or not. Make sure
@@ -1887,7 +1917,7 @@ impl EncodedDepInfo {
                 _ => return None,
             };
             let bytes = read_bytes(bytes)?;
-            files.push((ty, util::bytes2path(bytes).ok()?));
+            files.push((ty, paths::bytes2path(bytes).ok()?));
         }
 
         let nenv = read_usize(bytes)?;
@@ -1906,12 +1936,7 @@ impl EncodedDepInfo {
         fn read_usize(bytes: &mut &[u8]) -> Option<usize> {
             let ret = bytes.get(..4)?;
             *bytes = &bytes[4..];
-            Some(
-                ((ret[0] as usize) << 0)
-                    | ((ret[1] as usize) << 8)
-                    | ((ret[2] as usize) << 16)
-                    | ((ret[3] as usize) << 24),
-            )
+            Some(u32::from_le_bytes(ret.try_into().unwrap()) as usize)
         }
 
         fn read_u8(bytes: &mut &[u8]) -> Option<u8> {
@@ -1937,7 +1962,7 @@ impl EncodedDepInfo {
                 DepInfoPathType::PackageRootRelative => dst.push(0),
                 DepInfoPathType::TargetRootRelative => dst.push(1),
             }
-            write_bytes(dst, util::path2bytes(file)?);
+            write_bytes(dst, paths::path2bytes(file)?);
         }
 
         write_usize(dst, self.env.len());
@@ -1960,10 +1985,7 @@ impl EncodedDepInfo {
         }
 
         fn write_usize(dst: &mut Vec<u8>, val: usize) {
-            dst.push(val as u8);
-            dst.push((val >> 8) as u8);
-            dst.push((val >> 16) as u8);
-            dst.push((val >> 24) as u8);
+            dst.extend(&u32::to_le_bytes(val as u32));
         }
     }
 }
@@ -1975,9 +1997,7 @@ pub fn parse_rustc_dep_info(rustc_dep_info: &Path) -> CargoResult<RustcDepInfo> 
     let mut found_deps = false;
 
     for line in contents.lines() {
-        let env_dep_prefix = "# env-dep:";
-        if line.starts_with(env_dep_prefix) {
-            let rest = &line[env_dep_prefix.len()..];
+        if let Some(rest) = line.strip_prefix("# env-dep:") {
             let mut parts = rest.splitn(2, '=');
             let env_var = match parts.next() {
                 Some(s) => s,
